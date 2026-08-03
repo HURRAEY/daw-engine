@@ -1,10 +1,10 @@
+import { DAW_DATABASE_NAME } from "../config/product-identifiers";
 import {
   ExportPresetSnapshot,
   ExportPreset,
   getBuiltInPresets,
 } from "../domain/ExportPreset";
 
-const DB_NAME = "daw-engine";
 const DB_VERSION = 2;
 const PRESETS_STORE = "exportPresets";
 
@@ -29,7 +29,7 @@ export class ExportPresetStorage {
     if (this.dbPromise) return this.dbPromise;
 
     this.dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      const request = indexedDB.open(DAW_DATABASE_NAME, DB_VERSION);
 
       request.onupgradeneeded = (event) => {
         const db = request.result;

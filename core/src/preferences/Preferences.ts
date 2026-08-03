@@ -1,7 +1,7 @@
+import { PREFERENCES_STORAGE_KEY } from "../config/product-identifiers";
 import { Signal } from "../lib/Signal";
 
 import { logger } from "../utils/Logger";
-const STORAGE_KEY = "daw-engine-preferences";
 
 export interface PreferenceValues {
   audioBufferSize: 128 | 256 | 512 | 1024 | 2048;
@@ -104,7 +104,10 @@ export class Preferences {
   private saveToStorage(): void {
     try {
       if (typeof localStorage === "undefined") return;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.values));
+      localStorage.setItem(
+        PREFERENCES_STORAGE_KEY,
+        JSON.stringify(this.values),
+      );
     } catch {
       logger.warn("Preferences", "Failed to save to localStorage");
     }
@@ -113,7 +116,7 @@ export class Preferences {
   private loadFromStorage(): void {
     try {
       if (typeof localStorage === "undefined") return;
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(PREFERENCES_STORAGE_KEY);
       if (raw) {
         const data = JSON.parse(raw) as Partial<PreferenceValues>;
         // Merge loaded values with defaults (in case new prefs were added)
