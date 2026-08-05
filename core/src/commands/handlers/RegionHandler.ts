@@ -18,7 +18,7 @@ import type { VideoMetadata } from "../../domain/VideoMetadata";
 import { AddSourceCommand } from "../impl/AddSourceCommand";
 import { AddRegionCommand } from "../impl/AddRegionCommand";
 import { RemoveRegionCommand } from "../impl/RemoveRegionCommand";
-import { MoveRegionCommand } from "../impl/MoveRegionCommand";
+import { moveRegionAndCreateTransaction } from "../history/moveRegionAndCreateTransaction";
 import { ResizeRegionCommand } from "../impl/ResizeRegionCommand";
 import { CopyRegionCommand } from "../impl/CopyRegionCommand";
 import { PasteRegionCommand } from "../impl/PasteRegionCommand";
@@ -206,14 +206,14 @@ export class RegionHandler implements CommandHandler {
           }
         }
 
-        const cmd = new MoveRegionCommand(
+        const transaction = moveRegionAndCreateTransaction({
           session,
-          requireString(payload, "trackId"),
-          primaryRegionId,
+          trackId: requireString(payload, "trackId"),
+          regionId: primaryRegionId,
           newStart,
-          optionalString(payload, "targetTrackId"),
-        );
-        await history.execute(cmd);
+          targetTrackId: optionalString(payload, "targetTrackId"),
+        });
+        await history.record(transaction, transaction.name);
         return { success: true, message: `Region moved to ${newStart}` };
       }
 
