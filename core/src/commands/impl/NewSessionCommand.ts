@@ -91,6 +91,9 @@ export class NewSessionCommand implements UndoableCommand {
       track.mute = trackData.mute;
       track.solo = trackData.solo;
       if (trackData.color) track.color = trackData.color;
+      if (trackData.recordMode !== undefined) {
+        track.setRecordMode(trackData.recordMode);
+      }
 
       for (const regionData of trackData.regions) {
         const { Region } = await import("../../domain/Region");
@@ -105,6 +108,7 @@ export class NewSessionCommand implements UndoableCommand {
         );
         region.gain = regionData.gain;
         region.muted = regionData.muted;
+        region.opaque = regionData.opaque ?? true;
         region.fadeIn = regionData.fadeIn;
         region.fadeOut = regionData.fadeOut;
         region.playbackRate = regionData.playbackRate;

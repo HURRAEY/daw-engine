@@ -3,38 +3,22 @@ import {
   RegionMoveService,
 } from "../../domain/RegionMoveService";
 import type { Playlist } from "../../domain/Playlist";
-import { UndoTransaction } from "../UndoTransaction";
 import {
-  capturePlaylistStates,
-  PlaylistStateDiffCommand,
-} from "../state/PlaylistStateDiffCommand";
-import {
-  captureRegionStates,
-  RegionStateDiffCommand,
-} from "../state/RegionStateDiffCommand";
+  capturePlaylistEditState,
+  createPlaylistEditTransaction,
+} from "./PlaylistEditHistory";
+import type { UndoTransaction } from "../UndoTransaction";
 
 export function moveRegionAndCreateTransaction(
   request: RegionMoveRequest,
 ): UndoTransaction {
   const playlists = resolveAffectedPlaylists(request);
-  const beforeRegions = captureRegionStates(playlists);
-  const beforePlaylists = capturePlaylistStates(playlists);
+  const before = capturePlaylistEditState(playlists);
 
   RegionMoveService.move(request);
 
-  const afterRegions = captureRegionStates(playlists);
-  const afterPlaylists = capturePlaylistStates(playlists);
-  const transaction = new UndoTransaction("MoveRegion");
-
-  // Undo는 Region 상태를 먼저 되돌리고 Playlist 소속과 Crossfade를 복원해야 합니다.
-  transaction.addCommand(
-    new PlaylistStateDiffCommand(beforePlaylists, afterPlaylists),
-  );
-  transaction.addCommand(
-    new RegionStateDiffCommand(playlists, beforeRegions, afterRegions),
-  );
-
-  return transaction;
+  const after = capturePlaylistEditState(playlists);
+  return createPlaylistEditTransaction("MoveRegion", before, after);
 }
 
 function resolveAffectedPlaylists(

@@ -83,6 +83,7 @@ export class StripSilenceCommand implements UndoableCommand {
       );
       newRegion.gain = region.gain;
       newRegion.muted = region.muted;
+      newRegion.opaque = region.opaque;
       newRegion.playbackRate = region.playbackRate;
       newRegion.stretch = region.stretch;
       newRegion.pitchSemitones = region.pitchSemitones;

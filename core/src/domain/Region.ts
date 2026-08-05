@@ -24,6 +24,7 @@ export class Region {
   public gain: number = 1.0;
   public muted: boolean = false;
   public layer: number = 0;
+  public opaque: boolean = true;
   public fadeIn: FrameCount = 0;
   public fadeOut: FrameCount = 0;
   public fadeInShape: FadeShape = FadeShape.EQUAL_POWER;

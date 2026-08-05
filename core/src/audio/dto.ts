@@ -12,6 +12,8 @@ export interface RegionDTO {
   gain: number;
   muted: boolean;
   layer: number;
+  /** false면 아래 Layer와 함께 재생합니다. 생략하면 true로 처리합니다. */
+  opaque?: boolean;
   fadeIn: FrameCount;
   fadeOut: FrameCount;
   playbackRate: number;

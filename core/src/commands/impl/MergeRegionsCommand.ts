@@ -88,6 +88,10 @@ export class MergeRegionsCommand implements UndoableCommand {
       track.playlist.removeRegion(id);
     }
 
+    const topRegion = this.oldRegions.reduce((top, region) => {
+      return region.layer > top.layer ? region : top;
+    });
+
     // Create & Add new Region
     this.newRegion = new Region(
       crypto.randomUUID() as RegionId,
@@ -96,7 +100,9 @@ export class MergeRegionsCommand implements UndoableCommand {
       durationFrames,
       0,
       "Merged Region",
+      topRegion.layer,
     );
+    this.newRegion.opaque = topRegion.opaque;
 
     track.playlist.addRegion(this.newRegion);
 

@@ -44,6 +44,8 @@ import { BatchMoveRegionsCommand } from "../impl/BatchMoveRegionsCommand";
 import { BatchTrimRegionsCommand } from "../impl/BatchTrimRegionsCommand";
 import { BatchRemoveRegionsCommand } from "../impl/BatchRemoveRegionsCommand";
 import { BatchSetRegionFadesCommand } from "../impl/BatchSetRegionFadesCommand";
+import { SetRegionLayerCommand } from "../impl/SetRegionLayerCommand";
+import { SetRegionOpaqueCommand } from "../impl/SetRegionOpaqueCommand";
 
 /**
  * Region Command Handler
@@ -70,6 +72,8 @@ export class RegionHandler implements CommandHandler {
     CommandType.TRIM_REGION_TO_RANGE,
     CommandType.TRIM_TO_ADJACENT_REGION,
     CommandType.SET_REGION_FADES,
+    CommandType.SET_REGION_LAYER,
+    CommandType.SET_REGION_OPAQUE,
     CommandType.MERGE_REGIONS,
     CommandType.SELECT_REGIONS,
     CommandType.LOCK_REGION,
@@ -343,6 +347,28 @@ export class RegionHandler implements CommandHandler {
         );
         await history.execute(cmd);
         return { success: true, message: `Region fades updated` };
+      }
+
+      case CommandType.SET_REGION_LAYER: {
+        const command = new SetRegionLayerCommand(
+          audioEngine.session,
+          requireString(payload, "trackId"),
+          requireString(payload, "regionId"),
+          requireNumber(payload, "layer"),
+        );
+        await history.execute(command);
+        return { success: true, message: "Region layer updated" };
+      }
+
+      case CommandType.SET_REGION_OPAQUE: {
+        const command = new SetRegionOpaqueCommand(
+          audioEngine.session,
+          requireString(payload, "trackId"),
+          requireString(payload, "regionId"),
+          requireBoolean(payload, "opaque"),
+        );
+        await history.execute(command);
+        return { success: true, message: "Region opacity updated" };
       }
 
       case CommandType.MERGE_REGIONS: {
