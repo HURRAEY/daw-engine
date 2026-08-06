@@ -41,6 +41,15 @@ npm Registry 배포 전에는 재현 가능한 설치를 위해 commit SHA를 �
 Git dependency는 설치 스크립트를 실행하지 않고 사전 생성한 `package-dist`의 JavaScript와 타입 선언을 내보냅니다.
 소비자는 일반 package import를 사용합니다.
 
+브라우저에서 AudioProvider adapter만 구현할 때는 전체 공개 API 대신 좁은 subpath를 사용합니다.
+
+```typescript
+import {
+  AudioEngine,
+  type AudioProvider,
+} from "@daw-engine/core/browser-adapter";
+```
+
 ```bash
 npm install @daw-engine/core
 ```
