@@ -7186,14 +7186,17 @@ var AudioEngine = class _AudioEngine {
       this.cancelFrame(this.syncId);
       this.syncId = null;
     }
-    this.signalDisposers.forEach((d) => d.dispose());
+    this.disconnectSessionSignals();
+  }
+  disconnectSessionSignals() {
+    this.signalDisposers.forEach((disposer) => disposer.dispose());
     this.signalDisposers = [];
     this.trackDisposers.forEach(
-      (disposers) => disposers.forEach((d) => d.dispose())
+      (disposers) => disposers.forEach((disposer) => disposer.dispose())
     );
     this.trackDisposers.clear();
     this.sendBusDisposers.forEach(
-      (disposers) => disposers.forEach((d) => d.dispose())
+      (disposers) => disposers.forEach((disposer) => disposer.dispose())
     );
     this.sendBusDisposers.clear();
   }
@@ -7334,68 +7337,13 @@ var AudioEngine = class _AudioEngine {
             track.route.output.id
           );
         }
+        const disposers = [];
         track.route.processors.forEach((proc, index) => {
           const type = this.getProcessorType(proc);
           this.backend.addProcessor(track.id, proc.id, type, index);
-          this.connectProcessorSignals(track.id, proc);
+          this.connectProcessorSignals(track.id, proc, disposers);
         });
-        const disposers = [];
-        disposers.push(
-          track.route.processorAdded.connect((proc) => {
-            const index = track.route.processors.indexOf(proc);
-            const type = this.getProcessorType(proc);
-            this.backend.addProcessor(track.id, proc.id, type, index);
-            this.connectProcessorSignals(track.id, proc);
-          })
-        );
-        disposers.push(
-          track.route.processorRemoved.connect((procId) => {
-            this.backend.removeProcessor(track.id, procId);
-          })
-        );
-        disposers.push(
-          track.playlist.regionAdded.connect((region) => {
-            const dto = _AudioEngine.toRegionDTO(region);
-            this.backend.scheduleRegion(track.id, dto);
-          })
-        );
-        disposers.push(
-          track.playlist.regionRemoved.connect((regionId) => {
-            this.backend.removeRegion(track.id, regionId);
-          })
-        );
-        disposers.push(
-          track.playlist.regionChanged.connect((region) => {
-            this.updateRegion(track.id, region);
-          })
-        );
-        disposers.push(
-          track.playlist.midiRegionAdded.connect((midiRegion) => {
-            const dto = {
-              id: midiRegion.id,
-              name: midiRegion.name,
-              start: midiRegion.start,
-              length: midiRegion.length,
-              end: midiRegion.end,
-              muted: midiRegion.muted,
-              notes: midiRegion.getNotes().map((n) => ({
-                id: n.id,
-                pitch: n.pitch,
-                velocity: n.velocity,
-                startFrame: n.startFrame,
-                durationFrames: n.durationFrames,
-                channel: n.channel
-              }))
-            };
-            this.backend.scheduleMidiRegion(track.id, dto);
-          })
-        );
-        disposers.push(
-          track.playlist.midiRegionRemoved.connect((regionId) => {
-            this.backend.removeMidiRegion(track.id, regionId);
-          })
-        );
-        this.bindTrackSignals(track, disposers);
+        this.bindTrackRuntimeSignals(track, disposers);
         this.trackDisposers.set(track.id, disposers);
       })
     );
@@ -7474,18 +7422,71 @@ var AudioEngine = class _AudioEngine {
         this.backend.removeSendBus(sendBusId);
       })
     );
-    this.session.tracks.forEach((t) => {
+    this.session.tracks.forEach((track) => {
       const disposers = [];
-      this.bindTrackSignals(t, disposers);
+      track.route.processors.forEach((processor) => {
+        this.connectProcessorSignals(track.id, processor, disposers);
+      });
+      this.bindTrackRuntimeSignals(track, disposers);
       if (disposers.length > 0) {
-        const existing = this.trackDisposers.get(t.id);
+        const existing = this.trackDisposers.get(track.id);
         if (existing) {
           existing.push(...disposers);
         } else {
-          this.trackDisposers.set(t.id, disposers);
+          this.trackDisposers.set(track.id, disposers);
         }
       }
     });
+  }
+  bindTrackRuntimeSignals(track, disposers) {
+    disposers.push(
+      track.route.processorAdded.connect((processor) => {
+        const index = track.route.processors.indexOf(processor);
+        const type = this.getProcessorType(processor);
+        this.backend.addProcessor(track.id, processor.id, type, index);
+        this.connectProcessorSignals(track.id, processor, disposers);
+      }),
+      track.route.processorRemoved.connect((processorId) => {
+        this.backend.removeProcessor(track.id, processorId);
+      }),
+      track.playlist.regionAdded.connect((region) => {
+        this.backend.scheduleRegion(track.id, _AudioEngine.toRegionDTO(region));
+      }),
+      track.playlist.regionRemoved.connect((regionId) => {
+        this.backend.removeRegion(track.id, regionId);
+      }),
+      track.playlist.regionChanged.connect((region) => {
+        this.updateRegion(track.id, region);
+      }),
+      track.playlist.midiRegionAdded.connect((midiRegion) => {
+        this.backend.scheduleMidiRegion(
+          track.id,
+          _AudioEngine.toMidiRegionDTO(midiRegion)
+        );
+      }),
+      track.playlist.midiRegionRemoved.connect((regionId) => {
+        this.backend.removeMidiRegion(track.id, regionId);
+      })
+    );
+    this.bindTrackSignals(track, disposers);
+  }
+  static toMidiRegionDTO(midiRegion) {
+    return {
+      id: midiRegion.id,
+      name: midiRegion.name,
+      start: midiRegion.start,
+      length: midiRegion.length,
+      end: midiRegion.end,
+      muted: midiRegion.muted,
+      notes: midiRegion.getNotes().map((note) => ({
+        id: note.id,
+        pitch: note.pitch,
+        velocity: note.velocity,
+        startFrame: note.startFrame,
+        durationFrames: note.durationFrames,
+        channel: note.channel
+      }))
+    };
   }
   bindTrackSignals(track, disposers = []) {
     if (track.monitorChanged) {
@@ -7562,100 +7563,129 @@ var AudioEngine = class _AudioEngine {
   }
   connectMasterProcessorSignals(proc) {
     if (proc instanceof GainProcessor) {
-      proc.gainChanged.connect((val) => {
-        this.backend.setMasterGain(val);
-      });
+      this.signalDisposers.push(
+        proc.gainChanged.connect((val) => {
+          this.backend.setMasterGain(val);
+        })
+      );
     }
     if (proc instanceof PluginInsert && proc.plugin && proc.plugin.parameterChanged) {
-      proc.plugin.parameterChanged.connect(
-        ({ id, value }) => {
-          this.backend.setMasterProcessorParameter(proc.id, id, value);
-        }
+      this.signalDisposers.push(
+        proc.plugin.parameterChanged.connect(
+          ({ id, value }) => {
+            this.backend.setMasterProcessorParameter(proc.id, id, value);
+          }
+        )
       );
     }
   }
-  connectProcessorSignals(trackId, proc) {
+  connectProcessorSignals(trackId, proc, disposers) {
     if (proc instanceof GainProcessor) {
-      proc.gainChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "gain", val);
-      });
+      disposers.push(
+        proc.gainChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "gain", val);
+        })
+      );
     }
     if (proc instanceof Panner) {
-      proc.azimuthChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
-      });
-      proc.widthChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "width", val);
-      });
+      disposers.push(
+        proc.azimuthChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
+        }),
+        proc.widthChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "width", val);
+        })
+      );
     } else if (proc instanceof PanProcessor) {
-      proc.panChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
-      });
-      proc.widthChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "width", val);
-      });
+      disposers.push(
+        proc.panChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
+        }),
+        proc.widthChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "width", val);
+        })
+      );
     }
     if (proc instanceof PolarityProcessor) {
-      proc.polarityChanged.connect((inverted) => {
-        this.backend.setProcessorParameter(
-          trackId,
-          proc.id,
-          "polarity",
-          inverted ? 1 : 0
-        );
-      });
+      disposers.push(
+        proc.polarityChanged.connect((inverted) => {
+          this.backend.setProcessorParameter(
+            trackId,
+            proc.id,
+            "polarity",
+            inverted ? 1 : 0
+          );
+        })
+      );
     }
     if (proc instanceof SendProcessor) {
-      proc.levelChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "level", val);
-      });
-      proc.preFaderChanged.connect((preFader) => {
-        this.backend.setProcessorParameter(
-          trackId,
-          proc.id,
-          "preFader",
-          preFader ? 1 : 0
-        );
-      });
-      proc.muteChanged.connect((muted) => {
-        this.backend.setProcessorParameter(
-          trackId,
-          proc.id,
-          "muted",
-          muted ? 1 : 0
-        );
-      });
+      disposers.push(
+        proc.levelChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "level", val);
+        }),
+        proc.preFaderChanged.connect((preFader) => {
+          this.backend.setProcessorParameter(
+            trackId,
+            proc.id,
+            "preFader",
+            preFader ? 1 : 0
+          );
+        }),
+        proc.muteChanged.connect((muted) => {
+          this.backend.setProcessorParameter(
+            trackId,
+            proc.id,
+            "muted",
+            muted ? 1 : 0
+          );
+        })
+      );
     }
     if (proc instanceof PluginInsert && proc.plugin && proc.plugin.parameterChanged) {
-      proc.plugin.parameterChanged.connect(
-        ({ id, value }) => {
-          this.backend.setProcessorParameter(trackId, proc.id, id, value);
-        }
+      disposers.push(
+        proc.plugin.parameterChanged.connect(
+          ({ id, value }) => {
+            this.backend.setProcessorParameter(trackId, proc.id, id, value);
+          }
+        )
       );
     }
     if (proc.automations) {
       proc.automations.forEach((list, param) => {
-        this.bindAutomationList(trackId, proc.id, param, list);
+        this.bindAutomationList(trackId, proc.id, param, list, disposers);
       });
     }
     if (proc.automationAdded) {
-      proc.automationAdded.connect(
-        ({ paramName, list }) => {
-          this.bindAutomationList(trackId, proc.id, paramName, list);
-        }
+      disposers.push(
+        proc.automationAdded.connect(
+          ({
+            paramName,
+            list
+          }) => {
+            this.bindAutomationList(
+              trackId,
+              proc.id,
+              paramName,
+              list,
+              disposers
+            );
+          }
+        )
       );
     }
   }
-  bindAutomationList(trackId, procId, param, list) {
+  bindAutomationList(trackId, procId, param, list, disposers) {
     if (list.changed) {
-      list.changed.connect(() => {
-        logger.debug(
-          "AudioEngine",
-          `Automation changed for ${trackId}:${procId}:${param}`
-        );
-        const points2 = list.getPoints();
-        this.backend.setProcessorAutomation(trackId, procId, param, points2);
-      });
+      disposers.push(
+        list.changed.connect(() => {
+          logger.debug(
+            "AudioEngine",
+            `Automation changed for ${trackId}:${procId}:${param}`
+          );
+          const points2 = list.getPoints();
+          this.backend.setProcessorAutomation(trackId, procId, param, points2);
+        })
+      );
       const points = list.getPoints();
       if (points.length > 0) {
         this.backend.setProcessorAutomation(trackId, procId, param, points);
@@ -8145,11 +8175,13 @@ var AudioEngine = class _AudioEngine {
   // Session Management
   loadSession(newSession) {
     this.stop();
+    this.disconnectSessionSignals();
     this.session = newSession;
     this.setupSessionListeners();
   }
   loadSessionFromSnapshot(snapshot) {
     this.stop();
+    this.disconnectSessionSignals();
     this.session = Session.fromJSON(snapshot);
     this.setupSessionListeners();
   }
