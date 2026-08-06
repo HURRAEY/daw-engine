@@ -98,6 +98,13 @@ export { ExportPresetManager } from "./audio/export/ExportPresetManager";
 // ─── Commands ───────────────────────────────────────────────────────────────
 export { CommandExecutor } from "./commands/CommandExecutor";
 export { CommandHistory } from "./commands/CommandHistory";
+export { UndoTransaction } from "./commands/UndoTransaction";
+export type {
+  Command,
+  ReversibleChange,
+  UndoableCommand,
+} from "./commands/Command";
+export type { HistoryEntry } from "./commands/CommandHistory";
 export { CommandType } from "./commands/types";
 export type { AudioCommand } from "./commands/types";
 export type {

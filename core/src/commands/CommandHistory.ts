@@ -1,10 +1,10 @@
-import { UndoableCommand } from "./Command";
+import { ReversibleChange, UndoableCommand } from "./Command";
 import { UndoTransaction } from "./UndoTransaction";
 import { Signal } from "../lib/Signal";
 import type { SerializableCommand } from "./CommandRegistry";
 
 export interface HistoryEntry {
-  command: UndoableCommand;
+  command: ReversibleChange;
   label: string;
   timestamp: number;
 }
@@ -45,6 +45,7 @@ export class CommandHistory {
   private undoStack: HistoryEntry[] = [];
   private redoStack: HistoryEntry[] = [];
   private _depth: number = 0; // 0 = unlimited
+  private operationTail: Promise<void> = Promise.resolve();
 
   // Active transaction
   private _activeTransaction: UndoTransaction | null = null;
@@ -83,17 +84,44 @@ export class CommandHistory {
 
   // --- Execute ---
 
-  public async execute(command: UndoableCommand, label?: string) {
-    await command.execute();
+  public execute(command: UndoableCommand, label?: string): Promise<void> {
+    return this.enqueueOperation(async () => {
+      await command.execute();
+      this.store(command, label);
+    });
+  }
+
+  /**
+   * 도메인 서비스가 이미 적용한 변경을 실행 없이 기록합니다.
+   * 기능 실행과 History 저장을 분리할 때 사용합니다.
+   */
+  public record(command: ReversibleChange, label?: string): Promise<void> {
+    return this.enqueueOperation(async () => {
+      this.store(command, label);
+    });
+  }
+
+  private store(
+    command: ReversibleChange,
+    label?: string,
+    timestamp: number = Date.now(),
+  ): void {
     const entryLabel = label || command.constructor.name.replace("Command", "");
     this.undoStack.push({
       command,
       label: entryLabel,
-      timestamp: Date.now(),
+      timestamp,
     });
     this.trimUndoStack();
     this.redoStack = []; // Clear redo stack on new action
     this.historyChanged.emit();
+  }
+
+  private enqueueOperation(operation: () => Promise<void>): Promise<void> {
+    const result = this.operationTail.then(operation);
+    // 한 작업이 실패해도 이후 Undo/Redo 요청은 계속 순서대로 실행되어야 합니다.
+    this.operationTail = result.catch(() => undefined);
+    return result;
   }
 
   // --- Transaction grouping ---
@@ -115,22 +143,18 @@ export class CommandHistory {
     }
     const txn = this._activeTransaction;
     this._activeTransaction = null;
-    this.undoStack.push({
-      command: txn,
-      label: txn.name,
-      timestamp: txn.timestamp,
+    return this.enqueueOperation(async () => {
+      this.store(txn, txn.name, txn.timestamp);
     });
-    this.trimUndoStack();
-    this.redoStack = [];
-    this.historyChanged.emit();
   }
 
   public async abortTransaction(): Promise<void> {
     if (!this._activeTransaction) return;
     const txn = this._activeTransaction;
     this._activeTransaction = null;
-    // Undo everything in the active transaction
-    await txn.undo();
+    return this.enqueueOperation(async () => {
+      await txn.undo();
+    });
   }
 
   public get hasActiveTransaction(): boolean {
@@ -139,32 +163,60 @@ export class CommandHistory {
 
   // --- Undo / Redo with begin/end signals ---
 
-  public async undo() {
-    const entry = this.undoStack.pop();
-    if (entry) {
+  public undo(): Promise<void> {
+    return this.enqueueOperation(async () => {
+      await this.undoOne();
+    });
+  }
+
+  public redo(): Promise<void> {
+    return this.enqueueOperation(async () => {
+      await this.redoOne();
+    });
+  }
+
+  private async undoOne(emitSignals: boolean = true): Promise<boolean> {
+    const entry = this.undoStack[this.undoStack.length - 1];
+    if (!entry) return false;
+
+    if (emitSignals) {
       this.beginUndoRedo.emit();
-      try {
-        await entry.command.undo();
-        this.redoStack.push(entry);
-      } finally {
+    }
+    try {
+      await entry.command.undo();
+      this.undoStack.pop();
+      this.redoStack.push(entry);
+      if (emitSignals) {
+        this.historyChanged.emit();
+      }
+      return true;
+    } finally {
+      if (emitSignals) {
         this.endUndoRedo.emit();
       }
-      this.historyChanged.emit();
     }
   }
 
-  public async redo() {
-    const entry = this.redoStack.pop();
-    if (entry) {
+  private async redoOne(emitSignals: boolean = true): Promise<boolean> {
+    const entry = this.redoStack[this.redoStack.length - 1];
+    if (!entry) return false;
+
+    if (emitSignals) {
       this.beginUndoRedo.emit();
-      try {
-        await entry.command.redo();
-        this.undoStack.push(entry);
-        this.trimUndoStack();
-      } finally {
+    }
+    try {
+      await entry.command.redo();
+      this.redoStack.pop();
+      this.undoStack.push(entry);
+      this.trimUndoStack();
+      if (emitSignals) {
+        this.historyChanged.emit();
+      }
+      return true;
+    } finally {
+      if (emitSignals) {
         this.endUndoRedo.emit();
       }
-      this.historyChanged.emit();
     }
   }
 
@@ -180,23 +232,26 @@ export class CommandHistory {
    * @param count - Number of undo steps to perform.  Clamped to the
    *   available undo depth.
    */
-  public async undoMultiple(count: number): Promise<void> {
-    const steps = Math.min(Math.max(0, count), this.undoStack.length);
-    if (steps === 0) return;
+  public undoMultiple(count: number): Promise<void> {
+    return this.enqueueOperation(async () => {
+      const steps = Math.min(Math.max(0, count), this.undoStack.length);
+      if (steps === 0) {
+        return;
+      }
 
-    this.beginUndoRedo.emit();
-    try {
-      for (let i = 0; i < steps; i++) {
-        const entry = this.undoStack.pop();
-        if (entry) {
-          await entry.command.undo();
-          this.redoStack.push(entry);
+      let changed = false;
+      this.beginUndoRedo.emit();
+      try {
+        for (let i = 0; i < steps; i++) {
+          changed = (await this.undoOne(false)) || changed;
+        }
+      } finally {
+        this.endUndoRedo.emit();
+        if (changed) {
+          this.historyChanged.emit();
         }
       }
-    } finally {
-      this.endUndoRedo.emit();
-    }
-    this.historyChanged.emit();
+    });
   }
 
   /**
@@ -209,24 +264,26 @@ export class CommandHistory {
    * @param count - Number of redo steps to perform.  Clamped to the
    *   available redo depth.
    */
-  public async redoMultiple(count: number): Promise<void> {
-    const steps = Math.min(Math.max(0, count), this.redoStack.length);
-    if (steps === 0) return;
+  public redoMultiple(count: number): Promise<void> {
+    return this.enqueueOperation(async () => {
+      const steps = Math.min(Math.max(0, count), this.redoStack.length);
+      if (steps === 0) {
+        return;
+      }
 
-    this.beginUndoRedo.emit();
-    try {
-      for (let i = 0; i < steps; i++) {
-        const entry = this.redoStack.pop();
-        if (entry) {
-          await entry.command.redo();
-          this.undoStack.push(entry);
+      let changed = false;
+      this.beginUndoRedo.emit();
+      try {
+        for (let i = 0; i < steps; i++) {
+          changed = (await this.redoOne(false)) || changed;
+        }
+      } finally {
+        this.endUndoRedo.emit();
+        if (changed) {
+          this.historyChanged.emit();
         }
       }
-      this.trimUndoStack();
-    } finally {
-      this.endUndoRedo.emit();
-    }
-    this.historyChanged.emit();
+    });
   }
 
   // --- State queries ---
@@ -274,11 +331,13 @@ export class CommandHistory {
   /**
    * Undo to a specific point in history (undo multiple steps).
    */
-  public async undoTo(index: number): Promise<void> {
-    const stepsToUndo = this.undoStack.length - index;
-    for (let i = 0; i < stepsToUndo; i++) {
-      await this.undo();
-    }
+  public undoTo(index: number): Promise<void> {
+    return this.enqueueOperation(async () => {
+      const stepsToUndo = this.undoStack.length - index;
+      for (let i = 0; i < stepsToUndo; i++) {
+        await this.undoOne();
+      }
+    });
   }
 
   /**

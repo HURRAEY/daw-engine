@@ -89,7 +89,10 @@ export class CommandExecutor {
    * 3. 적절한 Handler 찾기
    * 4. Handler에게 위임
    */
-  public async execute(commandJson: unknown): Promise<CommandResult> {
+  public async execute(
+    commandJson: unknown,
+    history: CommandHistory = this._history,
+  ): Promise<CommandResult> {
     try {
       // 1. Validate the command against the schema
       const command = AudioCommandSchema.parse(commandJson);
@@ -117,7 +120,7 @@ export class CommandExecutor {
         command.type,
         payload,
         this.audioEngine,
-        this._history,
+        history,
       );
 
       if (result.success) {
