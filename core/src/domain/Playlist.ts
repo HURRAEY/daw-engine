@@ -85,6 +85,11 @@ export class Playlist {
     this.sortRegions();
   }
 
+  public notifyRegionChanged(region: Region): void {
+    this.sortRegions();
+    this._thawList.queueEmission(this.regionChanged, region);
+  }
+
   private sortRegions() {
     this.regions.sort((a, b) => a.start - b.start);
   }
