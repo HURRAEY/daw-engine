@@ -3186,6 +3186,7 @@ export declare class AudioEngine {
 	static resetInstance(): void;
 	/** Dispose all listeners and internal state to prevent memory leaks. */
 	dispose(): void;
+	private disconnectSessionSignals;
 	setBackend(backend: AudioProvider): void;
 	/**
 	 * Pre-cache a decoded AudioBuffer so subsequent addSource/getAudioBuffer
@@ -3205,6 +3206,8 @@ export declare class AudioEngine {
 	private static toRegionDTO;
 	updateRegion(trackId: string, _region: RegionDTO | Region): void;
 	private setupSessionListeners;
+	private bindTrackRuntimeSignals;
+	private static toMidiRegionDTO;
 	private bindTrackSignals;
 	private getProcessorType;
 	private connectMasterProcessorSignals;
