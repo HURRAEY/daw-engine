@@ -282,78 +282,8 @@ export class AudioEngine {
           this.connectProcessorSignals(track.id, proc);
         });
 
-        // Per-track disposers for cleanup on track removal
         const disposers: Array<{ dispose: () => void }> = [];
-
-        // Listen for Processor Graph Changes
-        disposers.push(
-          track.route.processorAdded.connect((proc: Processor) => {
-            // Find index
-            const index = track.route.processors.indexOf(proc);
-            const type = this.getProcessorType(proc);
-            this.backend.addProcessor(track.id, proc.id, type, index);
-            this.connectProcessorSignals(track.id, proc);
-          }),
-        );
-
-        disposers.push(
-          track.route.processorRemoved.connect((procId: string) => {
-            this.backend.removeProcessor(track.id, procId);
-          }),
-        );
-
-        // Listen for Playlist Changes
-        disposers.push(
-          track.playlist.regionAdded.connect((region: Region) => {
-            const dto = AudioEngine.toRegionDTO(region);
-            this.backend.scheduleRegion(track.id, dto);
-          }),
-        );
-
-        disposers.push(
-          track.playlist.regionRemoved.connect((regionId: string) => {
-            // Note: ToneAudioProvider implementation of removeRegion is empty/TODO, but we should call it.
-            this.backend.removeRegion(track.id, regionId);
-          }),
-        );
-
-        // Fix 4: Region changed (ripple edit, move, resize, etc.)
-        disposers.push(
-          track.playlist.regionChanged.connect((region: Region) => {
-            this.updateRegion(track.id, region);
-          }),
-        );
-
-        // Listen for MIDI Playlist Changes
-        disposers.push(
-          track.playlist.midiRegionAdded.connect((midiRegion: MidiRegion) => {
-            const dto: MidiRegionDTO = {
-              id: midiRegion.id,
-              name: midiRegion.name,
-              start: midiRegion.start,
-              length: midiRegion.length,
-              end: midiRegion.end,
-              muted: midiRegion.muted,
-              notes: midiRegion.getNotes().map((n) => ({
-                id: n.id,
-                pitch: n.pitch,
-                velocity: n.velocity,
-                startFrame: n.startFrame,
-                durationFrames: n.durationFrames,
-                channel: n.channel,
-              })),
-            };
-            this.backend.scheduleMidiRegion(track.id, dto);
-          }),
-        );
-
-        disposers.push(
-          track.playlist.midiRegionRemoved.connect((regionId: string) => {
-            this.backend.removeMidiRegion(track.id, regionId);
-          }),
-        );
-
-        this.bindTrackSignals(track, disposers);
+        this.bindTrackRuntimeSignals(track, disposers);
         this.trackDisposers.set(track.id, disposers);
       }),
     );
@@ -455,19 +385,77 @@ export class AudioEngine {
       }),
     );
 
-    // Monitor Changed Setup (Initial tracks)
-    this.session.tracks.forEach((t) => {
+    this.session.tracks.forEach((track) => {
       const disposers: Array<{ dispose: () => void }> = [];
-      this.bindTrackSignals(t, disposers);
+      // Session 교체 전부터 있던 Track도 이후 변경을 backend에 전달할 수 있도록 signal을 다시 연결한다.
+      track.route.processors.forEach((processor) => {
+        this.connectProcessorSignals(track.id, processor);
+      });
+      this.bindTrackRuntimeSignals(track, disposers);
       if (disposers.length > 0) {
-        const existing = this.trackDisposers.get(t.id);
+        const existing = this.trackDisposers.get(track.id);
         if (existing) {
           existing.push(...disposers);
         } else {
-          this.trackDisposers.set(t.id, disposers);
+          this.trackDisposers.set(track.id, disposers);
         }
       }
     });
+  }
+
+  private bindTrackRuntimeSignals(
+    track: Track,
+    disposers: Array<{ dispose: () => void }>,
+  ): void {
+    disposers.push(
+      track.route.processorAdded.connect((processor: Processor) => {
+        const index = track.route.processors.indexOf(processor);
+        const type = this.getProcessorType(processor);
+        this.backend.addProcessor(track.id, processor.id, type, index);
+        this.connectProcessorSignals(track.id, processor);
+      }),
+      track.route.processorRemoved.connect((processorId: string) => {
+        this.backend.removeProcessor(track.id, processorId);
+      }),
+      track.playlist.regionAdded.connect((region: Region) => {
+        this.backend.scheduleRegion(track.id, AudioEngine.toRegionDTO(region));
+      }),
+      track.playlist.regionRemoved.connect((regionId: string) => {
+        this.backend.removeRegion(track.id, regionId);
+      }),
+      track.playlist.regionChanged.connect((region: Region) => {
+        this.updateRegion(track.id, region);
+      }),
+      track.playlist.midiRegionAdded.connect((midiRegion: MidiRegion) => {
+        this.backend.scheduleMidiRegion(
+          track.id,
+          AudioEngine.toMidiRegionDTO(midiRegion),
+        );
+      }),
+      track.playlist.midiRegionRemoved.connect((regionId: string) => {
+        this.backend.removeMidiRegion(track.id, regionId);
+      }),
+    );
+    this.bindTrackSignals(track, disposers);
+  }
+
+  private static toMidiRegionDTO(midiRegion: MidiRegion): MidiRegionDTO {
+    return {
+      id: midiRegion.id,
+      name: midiRegion.name,
+      start: midiRegion.start,
+      length: midiRegion.length,
+      end: midiRegion.end,
+      muted: midiRegion.muted,
+      notes: midiRegion.getNotes().map((note) => ({
+        id: note.id,
+        pitch: note.pitch,
+        velocity: note.velocity,
+        startFrame: note.startFrame,
+        durationFrames: note.durationFrames,
+        channel: note.channel,
+      })),
+    };
   }
 
   private bindTrackSignals(
