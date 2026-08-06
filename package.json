@@ -3,16 +3,16 @@
   "version": "1.0.0-git",
   "private": true,
   "type": "module",
-  "main": "./core/dist/index.js",
-  "types": "./core/dist/index.d.ts",
+  "main": "./core/src/index.ts",
+  "types": "./core/src/index.ts",
   "exports": {
     ".": {
-      "types": "./core/dist/index.d.ts",
-      "import": "./core/dist/index.js"
+      "types": "./core/src/index.ts",
+      "import": "./core/src/index.ts"
     }
   },
   "files": [
-    "core/dist",
+    "core/src",
     "core/LICENSE",
     "core/README.md"
   ],
@@ -23,8 +23,7 @@
     "build": "tsc -p core/tsconfig.build.json",
     "lint": "pnpm run lint:core && pnpm run lint:ui-utils",
     "lint:core": "eslint \"core/src/**/*.ts\"",
-    "lint:ui-utils": "eslint \"ui-utils/src/**/*.ts\"",
-    "prepare": "pnpm run build"
+    "lint:ui-utils": "eslint \"ui-utils/src/**/*.ts\""
   },
   "dependencies": {
     "zod": "^4.3.6"

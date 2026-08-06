@@ -38,7 +38,8 @@ npm Registry 배포 전에는 재현 가능한 설치를 위해 commit SHA를 �
 }
 ```
 
-저장소 루트의 `prepare`가 `core/dist`를 빌드하며, 소비자는 일반 package import를 사용합니다.
+Git dependency는 설치 스크립트를 실행하지 않고 `core/src`를 내보냅니다. 소비자는 TypeScript dependency를 처리하는
+Vite 같은 번들러에서 일반 package import를 사용합니다.
 
 ```bash
 npm install @daw-engine/core
