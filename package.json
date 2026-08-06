@@ -1,17 +1,56 @@
 {
-  "name": "daw-engine-repository",
+  "name": "@daw-engine/core",
+  "version": "1.0.0-git",
   "private": true,
   "type": "module",
+  "main": "./package-dist/index.js",
+  "types": "./package-dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./package-dist/index.d.ts",
+      "import": "./package-dist/index.js"
+    },
+    "./browser-adapter": {
+      "types": "./package-dist/browser-adapter.d.ts",
+      "import": "./package-dist/browser-adapter.js"
+    }
+  },
+  "files": [
+    "package-dist",
+    "core/LICENSE",
+    "core/README.md"
+  ],
   "engines": {
     "node": ">=18.18.0"
   },
   "scripts": {
+    "build": "tsc -p core/tsconfig.build.json",
+    "build:package": "pnpm run build && pnpm run build:package:root && pnpm run build:package:browser-adapter",
+    "build:package:root": "esbuild core/src/index.ts --bundle --format=esm --platform=browser --external:zod --external:soundtouchjs --outfile=package-dist/index.js && dts-bundle-generator --no-banner --no-check --project core/tsconfig.json --out-file package-dist/index.d.ts core/src/index.ts",
+    "build:package:browser-adapter": "esbuild core/src/browser-adapter.ts --bundle --format=esm --platform=browser --external:zod --outfile=package-dist/browser-adapter.js && dts-bundle-generator --no-banner --no-check --project core/tsconfig.json --out-file package-dist/browser-adapter.d.ts core/src/browser-adapter.ts",
     "lint": "pnpm run lint:core && pnpm run lint:ui-utils",
     "lint:core": "eslint \"core/src/**/*.ts\"",
     "lint:ui-utils": "eslint \"ui-utils/src/**/*.ts\""
   },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "lamejs": "^1.2.1",
+    "soundtouchjs": "^0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "lamejs": {
+      "optional": true
+    },
+    "soundtouchjs": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "dts-bundle-generator": "^9.5.1",
+    "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.66.0"
