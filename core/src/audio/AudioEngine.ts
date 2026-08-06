@@ -101,14 +101,18 @@ export class AudioEngine {
       this.cancelFrame(this.syncId);
       this.syncId = null;
     }
-    this.signalDisposers.forEach((d) => d.dispose());
+    this.disconnectSessionSignals();
+  }
+
+  private disconnectSessionSignals(): void {
+    this.signalDisposers.forEach((disposer) => disposer.dispose());
     this.signalDisposers = [];
     this.trackDisposers.forEach((disposers) =>
-      disposers.forEach((d) => d.dispose()),
+      disposers.forEach((disposer) => disposer.dispose()),
     );
     this.trackDisposers.clear();
     this.sendBusDisposers.forEach((disposers) =>
-      disposers.forEach((d) => d.dispose()),
+      disposers.forEach((disposer) => disposer.dispose()),
     );
     this.sendBusDisposers.clear();
   }
@@ -275,14 +279,15 @@ export class AudioEngine {
           );
         }
 
+        const disposers: Array<{ dispose: () => void }> = [];
+
         // Sync initial processors
         track.route.processors.forEach((proc: Processor, index: number) => {
           const type = this.getProcessorType(proc);
           this.backend.addProcessor(track.id, proc.id, type, index);
-          this.connectProcessorSignals(track.id, proc);
+          this.connectProcessorSignals(track.id, proc, disposers);
         });
 
-        const disposers: Array<{ dispose: () => void }> = [];
         this.bindTrackRuntimeSignals(track, disposers);
         this.trackDisposers.set(track.id, disposers);
       }),
@@ -389,7 +394,7 @@ export class AudioEngine {
       const disposers: Array<{ dispose: () => void }> = [];
       // Session 교체 전부터 있던 Track도 이후 변경을 backend에 전달할 수 있도록 signal을 다시 연결한다.
       track.route.processors.forEach((processor) => {
-        this.connectProcessorSignals(track.id, processor);
+        this.connectProcessorSignals(track.id, processor, disposers);
       });
       this.bindTrackRuntimeSignals(track, disposers);
       if (disposers.length > 0) {
@@ -412,7 +417,7 @@ export class AudioEngine {
         const index = track.route.processors.indexOf(processor);
         const type = this.getProcessorType(processor);
         this.backend.addProcessor(track.id, processor.id, type, index);
-        this.connectProcessorSignals(track.id, processor);
+        this.connectProcessorSignals(track.id, processor, disposers);
       }),
       track.route.processorRemoved.connect((processorId: string) => {
         this.backend.removeProcessor(track.id, processorId);
@@ -546,76 +551,94 @@ export class AudioEngine {
     return "Unknown";
   }
 
-  private connectMasterProcessorSignals(proc: Processor) {
+  private connectMasterProcessorSignals(proc: Processor): void {
     if (proc instanceof GainProcessor) {
-      proc.gainChanged.connect((val: number) => {
-        this.backend.setMasterGain(val);
-      });
+      this.signalDisposers.push(
+        proc.gainChanged.connect((val: number) => {
+          this.backend.setMasterGain(val);
+        }),
+      );
     }
     if (
       proc instanceof PluginInsert &&
       proc.plugin &&
       proc.plugin.parameterChanged
     ) {
-      proc.plugin.parameterChanged.connect(
-        ({ id, value }: { id: string; value: number }) => {
-          this.backend.setMasterProcessorParameter(proc.id, id, value);
-        },
+      this.signalDisposers.push(
+        proc.plugin.parameterChanged.connect(
+          ({ id, value }: { id: string; value: number }) => {
+            this.backend.setMasterProcessorParameter(proc.id, id, value);
+          },
+        ),
       );
     }
   }
 
-  private connectProcessorSignals(trackId: string, proc: Processor) {
+  private connectProcessorSignals(
+    trackId: string,
+    proc: Processor,
+    disposers: Array<{ dispose: () => void }>,
+  ): void {
     if (proc instanceof GainProcessor) {
-      proc.gainChanged.connect((val: number) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "gain", val);
-      });
+      disposers.push(
+        proc.gainChanged.connect((val: number) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "gain", val);
+        }),
+      );
     }
     if (proc instanceof Panner) {
-      proc.azimuthChanged.connect((val: number) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
-      });
-      proc.widthChanged.connect((val: number) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "width", val);
-      });
+      disposers.push(
+        proc.azimuthChanged.connect((val: number) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
+        }),
+        proc.widthChanged.connect((val: number) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "width", val);
+        }),
+      );
     } else if (proc instanceof PanProcessor) {
-      proc.panChanged.connect((val: number) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
-      });
-      proc.widthChanged.connect((val: number) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "width", val);
-      });
+      disposers.push(
+        proc.panChanged.connect((val: number) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
+        }),
+        proc.widthChanged.connect((val: number) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "width", val);
+        }),
+      );
     }
     if (proc instanceof PolarityProcessor) {
-      proc.polarityChanged.connect((inverted: boolean) => {
-        this.backend.setProcessorParameter(
-          trackId,
-          proc.id,
-          "polarity",
-          inverted ? 1 : 0,
-        );
-      });
+      disposers.push(
+        proc.polarityChanged.connect((inverted: boolean) => {
+          this.backend.setProcessorParameter(
+            trackId,
+            proc.id,
+            "polarity",
+            inverted ? 1 : 0,
+          );
+        }),
+      );
     }
     if (proc instanceof SendProcessor) {
-      proc.levelChanged.connect((val: number) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "level", val);
-      });
-      proc.preFaderChanged.connect((preFader: boolean) => {
-        this.backend.setProcessorParameter(
-          trackId,
-          proc.id,
-          "preFader",
-          preFader ? 1 : 0,
-        );
-      });
-      proc.muteChanged.connect((muted: boolean) => {
-        this.backend.setProcessorParameter(
-          trackId,
-          proc.id,
-          "muted",
-          muted ? 1 : 0,
-        );
-      });
+      disposers.push(
+        proc.levelChanged.connect((val: number) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "level", val);
+        }),
+        proc.preFaderChanged.connect((preFader: boolean) => {
+          this.backend.setProcessorParameter(
+            trackId,
+            proc.id,
+            "preFader",
+            preFader ? 1 : 0,
+          );
+        }),
+        proc.muteChanged.connect((muted: boolean) => {
+          this.backend.setProcessorParameter(
+            trackId,
+            proc.id,
+            "muted",
+            muted ? 1 : 0,
+          );
+        }),
+      );
     }
 
     // Plugin Signals
@@ -624,26 +647,42 @@ export class AudioEngine {
       proc.plugin &&
       proc.plugin.parameterChanged
     ) {
-      proc.plugin.parameterChanged.connect(
-        ({ id, value }: { id: string; value: number }) => {
-          this.backend.setProcessorParameter(trackId, proc.id, id, value);
-        },
+      disposers.push(
+        proc.plugin.parameterChanged.connect(
+          ({ id, value }: { id: string; value: number }) => {
+            this.backend.setProcessorParameter(trackId, proc.id, id, value);
+          },
+        ),
       );
     }
 
     // Listen for Automation Changes
     if (proc.automations) {
       proc.automations.forEach((list: AutomationList, param: string) => {
-        this.bindAutomationList(trackId, proc.id, param, list);
+        this.bindAutomationList(trackId, proc.id, param, list, disposers);
       });
     }
 
     // Listen for future automations (Lazy creation)
     if (proc.automationAdded) {
-      proc.automationAdded.connect(
-        ({ paramName, list }: { paramName: string; list: AutomationList }) => {
-          this.bindAutomationList(trackId, proc.id, paramName, list);
-        },
+      disposers.push(
+        proc.automationAdded.connect(
+          ({
+            paramName,
+            list,
+          }: {
+            paramName: string;
+            list: AutomationList;
+          }) => {
+            this.bindAutomationList(
+              trackId,
+              proc.id,
+              paramName,
+              list,
+              disposers,
+            );
+          },
+        ),
       );
     }
   }
@@ -653,16 +692,19 @@ export class AudioEngine {
     procId: string,
     param: string,
     list: AutomationList,
-  ) {
+    disposers: Array<{ dispose: () => void }>,
+  ): void {
     if (list.changed) {
-      list.changed.connect(() => {
-        logger.debug(
-          "AudioEngine",
-          `Automation changed for ${trackId}:${procId}:${param}`,
-        );
-        const points = list.getPoints();
-        this.backend.setProcessorAutomation(trackId, procId, param, points);
-      });
+      disposers.push(
+        list.changed.connect(() => {
+          logger.debug(
+            "AudioEngine",
+            `Automation changed for ${trackId}:${procId}:${param}`,
+          );
+          const points = list.getPoints();
+          this.backend.setProcessorAutomation(trackId, procId, param, points);
+        }),
+      );
 
       // Initial sync if not empty
       const points = list.getPoints();
@@ -1322,12 +1364,15 @@ export class AudioEngine {
   // Session Management
   public loadSession(newSession: Session): void {
     this.stop();
+    // 이전 Session signal을 먼저 해제해야 교체 후의 변경만 backend에 전달된다.
+    this.disconnectSessionSignals();
     this.session = newSession;
     this.setupSessionListeners();
   }
 
   public loadSessionFromSnapshot(snapshot: SessionSnapshot): void {
     this.stop();
+    this.disconnectSessionSignals();
     this.session = Session.fromJSON(snapshot);
     this.setupSessionListeners();
   }

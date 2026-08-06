@@ -75,4 +75,28 @@ describe("AudioEngine lifecycle", () => {
     );
     engine.dispose();
   });
+
+  it("disconnects signals from the previous session when loading a session", () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const previousSession = engine.session;
+    const previousTrack = previousSession.addTrack(
+      "이전 트랙",
+      undefined,
+      "previous-track",
+    );
+
+    engine.loadSession(new Session("교체 세션"));
+    providerStub.getMethod("setProcessorParameter").mockClear();
+    providerStub.getMethod("createTrack").mockClear();
+
+    previousTrack.route.volume = -12;
+    previousSession.addTrack("남은 트랙", undefined, "stale-track");
+
+    expect(
+      providerStub.getMethod("setProcessorParameter"),
+    ).not.toHaveBeenCalled();
+    expect(providerStub.getMethod("createTrack")).not.toHaveBeenCalled();
+    engine.dispose();
+  });
 });
