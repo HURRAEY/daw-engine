@@ -28,6 +28,18 @@ It does not depend on a specific UI framework or audio runtime, so you can conne
 
 ## Installation
 
+npm Registry 배포 전에는 재현 가능한 설치를 위해 commit SHA를 고정한 Git dependency를 사용합니다.
+
+```json
+{
+  "dependencies": {
+    "@daw-engine/core": "git+https://github.com/HURRAEY/daw-engine.git#<commit-sha>"
+  }
+}
+```
+
+저장소 루트의 `prepare`가 `core/dist`를 빌드하며, 소비자는 일반 package import를 사용합니다.
+
 ```bash
 npm install @daw-engine/core
 ```

@@ -1,14 +1,45 @@
 {
-  "name": "daw-engine-repository",
+  "name": "@daw-engine/core",
+  "version": "1.0.0-git",
   "private": true,
   "type": "module",
+  "main": "./core/dist/index.js",
+  "types": "./core/dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./core/dist/index.d.ts",
+      "import": "./core/dist/index.js"
+    }
+  },
+  "files": [
+    "core/dist",
+    "core/LICENSE",
+    "core/README.md"
+  ],
   "engines": {
     "node": ">=18.18.0"
   },
   "scripts": {
+    "build": "tsc -p core/tsconfig.build.json",
     "lint": "pnpm run lint:core && pnpm run lint:ui-utils",
     "lint:core": "eslint \"core/src/**/*.ts\"",
-    "lint:ui-utils": "eslint \"ui-utils/src/**/*.ts\""
+    "lint:ui-utils": "eslint \"ui-utils/src/**/*.ts\"",
+    "prepare": "pnpm run build"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "lamejs": "^1.2.1",
+    "soundtouchjs": "^0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "lamejs": {
+      "optional": true
+    },
+    "soundtouchjs": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
