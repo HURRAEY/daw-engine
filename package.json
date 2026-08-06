@@ -3,16 +3,16 @@
   "version": "1.0.0-git",
   "private": true,
   "type": "module",
-  "main": "./core/src/index.ts",
-  "types": "./core/src/index.ts",
+  "main": "./package-dist/index.js",
+  "types": "./package-dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./core/src/index.ts",
-      "import": "./core/src/index.ts"
+      "types": "./package-dist/index.d.ts",
+      "import": "./package-dist/index.js"
     }
   },
   "files": [
-    "core/src",
+    "package-dist",
     "core/LICENSE",
     "core/README.md"
   ],
@@ -21,6 +21,7 @@
   },
   "scripts": {
     "build": "tsc -p core/tsconfig.build.json",
+    "build:package": "pnpm run build && esbuild core/src/index.ts --bundle --format=esm --platform=browser --packages=external --outfile=package-dist/index.js && dts-bundle-generator --no-banner --no-check --project core/tsconfig.json --out-file package-dist/index.d.ts core/src/index.ts",
     "lint": "pnpm run lint:core && pnpm run lint:ui-utils",
     "lint:core": "eslint \"core/src/**/*.ts\"",
     "lint:ui-utils": "eslint \"ui-utils/src/**/*.ts\""
@@ -42,6 +43,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "dts-bundle-generator": "^9.5.1",
+    "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.66.0"
