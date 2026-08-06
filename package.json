@@ -21,7 +21,7 @@
   },
   "scripts": {
     "build": "tsc -p core/tsconfig.build.json",
-    "build:package": "pnpm run build && esbuild core/src/index.ts --bundle --format=esm --platform=browser --packages=external --outfile=package-dist/index.js && dts-bundle-generator --no-banner --no-check --project core/tsconfig.json --out-file package-dist/index.d.ts core/src/index.ts",
+    "build:package": "pnpm run build && esbuild core/src/index.ts --bundle --format=esm --platform=browser --external:zod --external:soundtouchjs --outfile=package-dist/index.js && dts-bundle-generator --no-banner --no-check --project core/tsconfig.json --out-file package-dist/index.d.ts core/src/index.ts",
     "lint": "pnpm run lint:core && pnpm run lint:ui-utils",
     "lint:core": "eslint \"core/src/**/*.ts\"",
     "lint:ui-utils": "eslint \"ui-utils/src/**/*.ts\""
