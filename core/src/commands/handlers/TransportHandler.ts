@@ -8,6 +8,12 @@ import { CommandHistory } from "../CommandHistory";
 import { CommandType } from "../types";
 import { AddTempoChangeCommand } from "../impl/AddTempoChangeCommand";
 import { RemoveTempoChangeCommand } from "../impl/RemoveTempoChangeCommand";
+import { TrackType } from "../../domain/Track";
+import {
+  capturePlaylistEditState,
+  createPlaylistEditTransaction,
+  hasPlaylistMembershipChanged,
+} from "../history/PlaylistEditHistory";
 
 /**
  * Transport Command Handler
@@ -62,9 +68,23 @@ export class TransportHandler implements CommandHandler {
         await audioEngine.startRecording();
         return { success: true, message: "Recording started" };
 
-      case CommandType.STOP_RECORDING:
+      case CommandType.STOP_RECORDING: {
+        const playlists = audioEngine.session.tracks
+          .filter((track) => track.armed && track.type !== TrackType.MIDI)
+          .map((track) => track.playlist);
+        const before = capturePlaylistEditState(playlists);
         await audioEngine.stopRecording();
+        const after = capturePlaylistEditState(playlists);
+        if (hasPlaylistMembershipChanged(before, after)) {
+          const transaction = createPlaylistEditTransaction(
+            "RecordAudio",
+            before,
+            after,
+          );
+          await history.record(transaction, transaction.name);
+        }
         return { success: true, message: "Recording stopped" };
+      }
 
       case CommandType.TOGGLE_METRONOME:
         audioEngine.session.toggleMetronome();

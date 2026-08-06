@@ -33,6 +33,7 @@ import { TransportFSM, MotionState } from "./TransportFSM";
 import { SidechainConfig, SidechainConfigSnapshot } from "./SidechainConfig";
 import { Take, TakeLane, TakeSnapshot } from "./Take";
 import { TrackGroupLinkingService } from "./TrackGroupLinkingService";
+import { RecordMode } from "./RecordMode";
 
 import { logger } from "../utils/Logger";
 export class Session {
@@ -1204,6 +1205,7 @@ export class Session {
         monitorMode: t.monitorMode,
         trimGain: t.trimGain,
         comment: t.comment,
+        recordMode: t.recordMode,
         regions: t.playlist.getRegions().map((r) => ({
           id: r.id,
           sourceId: r.sourceId,
@@ -1214,6 +1216,7 @@ export class Session {
           gain: r.gain,
           muted: r.muted,
           layer: r.layer,
+          opaque: r.opaque,
           fadeIn: r.fadeIn,
           fadeOut: r.fadeOut,
           playbackRate: r.playbackRate,
@@ -1310,6 +1313,9 @@ export class Session {
       if (trackData.trimGain !== undefined)
         track.setTrimGain(trackData.trimGain);
       if (trackData.comment !== undefined) track.comment = trackData.comment;
+      if (trackData.recordMode !== undefined) {
+        track.setRecordMode(trackData.recordMode);
+      }
 
       for (const regionData of trackData.regions) {
         const region = new Region(
@@ -1323,6 +1329,7 @@ export class Session {
         );
         region.gain = regionData.gain;
         region.muted = regionData.muted;
+        region.opaque = regionData.opaque ?? true;
         region.fadeIn = regionData.fadeIn;
         region.fadeOut = regionData.fadeOut;
         region.playbackRate = regionData.playbackRate;
@@ -1477,6 +1484,7 @@ export interface RegionSnapshot {
   gain: number;
   muted: boolean;
   layer: number;
+  opaque?: boolean;
   fadeIn: number;
   fadeOut: number;
   playbackRate: number;
@@ -1497,6 +1505,7 @@ export interface TrackSnapshot {
   monitorMode?: string;
   trimGain?: number;
   comment?: string;
+  recordMode?: RecordMode;
   regions: RegionSnapshot[];
   midiRegions?: MidiRegionSnapshot[];
 }

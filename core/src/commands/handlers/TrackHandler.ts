@@ -22,6 +22,8 @@ import { FreezeTrackCommand } from "../impl/FreezeTrackCommand";
 import { AddAuxTrackCommand } from "../impl/AddAuxTrackCommand";
 import { AddBusTrackCommand } from "../impl/AddBusTrackCommand";
 import { MonitorMode } from "../../domain/MonitorMode";
+import { RecordMode } from "../../domain/RecordMode";
+import { SetTrackRecordModeCommand } from "../impl/SetTrackRecordModeCommand";
 
 /**
  * Track Command Handler
@@ -53,6 +55,7 @@ export class TrackHandler implements CommandHandler {
     CommandType.SET_TRACK_SOLO_ISOLATE,
     CommandType.SET_TRACK_SOLO_SAFE,
     CommandType.SET_TRACK_COMMENT,
+    CommandType.SET_TRACK_RECORD_MODE,
   ]);
 
   canHandle(commandType: string): boolean {
@@ -349,6 +352,17 @@ export class TrackHandler implements CommandHandler {
         }
         track.comment = comment;
         return { success: true, message: "Track comment updated" };
+      }
+
+      case CommandType.SET_TRACK_RECORD_MODE: {
+        const mode = requireString(payload, "mode") as RecordMode;
+        const command = new SetTrackRecordModeCommand(
+          audioEngine.session,
+          requireString(payload, "trackId"),
+          mode,
+        );
+        await history.execute(command);
+        return { success: true, message: `Track record mode set to ${mode}` };
       }
 
       default:

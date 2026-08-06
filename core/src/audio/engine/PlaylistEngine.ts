@@ -11,9 +11,8 @@ export const enum FadeCurve {
 export class PlaylistEngine {
   /**
    * Renders a block of audio for a given set of regions.
-   * Higher-layer regions take priority — when regions overlap,
-   * only the top-most layer's audio is heard at each sample position.
-   * Fades are applied per-region before the layer priority check.
+   * Higher Layer부터 처리합니다. 불투명 Region은 아래 Layer를 가리고,
+   * 투명 Region은 아래 Layer의 오디오와 합산됩니다.
    */
   public render(
     outputLeft: Float32Array,
@@ -130,12 +129,12 @@ export class PlaylistEngine {
 
       const gain = region.gain * fadeGain;
 
-      // Write to output (not additive — top layer wins)
-      outL[outIdx] = interpolatedL * gain;
-      outR[outIdx] = interpolatedR * gain;
+      outL[outIdx] += interpolatedL * gain;
+      outR[outIdx] += interpolatedR * gain;
 
-      // Mark this position as covered
-      covered[outIdx] = 1;
+      if (region.opaque !== false) {
+        covered[outIdx] = 1;
+      }
     }
   }
 }

@@ -3,6 +3,7 @@ import { Playlist } from "./Playlist";
 import { Signal } from "../lib/Signal";
 import { TrackId, RouteId, FrameCount } from "./types";
 import { MonitorMode } from "./MonitorMode";
+import { RecordMode } from "./RecordMode";
 
 export enum TrackType {
   AUDIO = "AUDIO",
@@ -21,14 +22,8 @@ export interface BounceConfig {
 }
 
 /**
- * Track mode determines recording and playback behavior.
- *
- * - 'normal': standard layered playback (default) -- all overlapping regions
- *   play simultaneously, respecting layer ordering.
- * - 'non_layered': only the top-most region at any given time position is
- *   audible; lower layers are silenced.
- * - 'tape': destructive recording mode -- new audio physically replaces
- *   existing audio in the source file rather than creating new regions.
+ * @deprecated 녹음 겹침 정책은 RecordMode를 사용합니다.
+ * 이 값은 호환성을 위해 유지되며 현재 Playlist 편집과 재생에는 사용되지 않습니다.
  */
 export type TrackMode = "normal" | "non_layered" | "tape";
 
@@ -74,6 +69,7 @@ export class Track {
 
   // Track mode
   private _trackMode: TrackMode = "normal";
+  private _recordMode: RecordMode = RecordMode.LAYERED;
 
   // Enhanced bounce/freeze state
   private _bounceProgress: number = 0;
@@ -91,6 +87,7 @@ export class Track {
   public readonly frozenChanged = new Signal<boolean>();
   public readonly alignStyleChanged = new Signal<string>();
   public readonly trackModeChanged = new Signal<string>();
+  public readonly recordModeChanged = new Signal<RecordMode>();
   public readonly bounceProgressChanged = new Signal<number>();
   public readonly bounceCompleted = new Signal<{ sourceId: string }>();
 
@@ -324,5 +321,17 @@ export class Track {
       this._trackMode = mode;
       this.trackModeChanged.emit(mode);
     }
+  }
+
+  public get recordMode(): RecordMode {
+    return this._recordMode;
+  }
+
+  public setRecordMode(mode: RecordMode): void {
+    if (this._recordMode === mode) {
+      return;
+    }
+    this._recordMode = mode;
+    this.recordModeChanged.emit(mode);
   }
 }
