@@ -9,6 +9,10 @@
     ".": {
       "types": "./package-dist/index.d.ts",
       "import": "./package-dist/index.js"
+    },
+    "./browser-adapter": {
+      "types": "./package-dist/browser-adapter.d.ts",
+      "import": "./package-dist/browser-adapter.js"
     }
   },
   "files": [
@@ -21,7 +25,9 @@
   },
   "scripts": {
     "build": "tsc -p core/tsconfig.build.json",
-    "build:package": "pnpm run build && esbuild core/src/index.ts --bundle --format=esm --platform=browser --external:zod --external:soundtouchjs --outfile=package-dist/index.js && dts-bundle-generator --no-banner --no-check --project core/tsconfig.json --out-file package-dist/index.d.ts core/src/index.ts",
+    "build:package": "pnpm run build && pnpm run build:package:root && pnpm run build:package:browser-adapter",
+    "build:package:root": "esbuild core/src/index.ts --bundle --format=esm --platform=browser --external:zod --external:soundtouchjs --outfile=package-dist/index.js && dts-bundle-generator --no-banner --no-check --project core/tsconfig.json --out-file package-dist/index.d.ts core/src/index.ts",
+    "build:package:browser-adapter": "esbuild core/src/browser-adapter.ts --bundle --format=esm --platform=browser --external:zod --outfile=package-dist/browser-adapter.js && dts-bundle-generator --no-banner --no-check --project core/tsconfig.json --out-file package-dist/browser-adapter.d.ts core/src/browser-adapter.ts",
     "lint": "pnpm run lint:core && pnpm run lint:ui-utils",
     "lint:core": "eslint \"core/src/**/*.ts\"",
     "lint:ui-utils": "eslint \"ui-utils/src/**/*.ts\""
