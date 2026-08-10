@@ -1691,6 +1691,7 @@ var init_Region = __esm({
         this.gain = 1;
         this.muted = false;
         this.layer = 0;
+        this.opaque = true;
         this.fadeIn = 0;
         this.fadeOut = 0;
         this.fadeInShape = 1 /* EQUAL_POWER */;
@@ -2337,6 +2338,20 @@ var init_ThawList = __esm({
   }
 });
 
+// core/src/domain/RecordMode.ts
+var RecordMode;
+var init_RecordMode = __esm({
+  "core/src/domain/RecordMode.ts"() {
+    "use strict";
+    RecordMode = /* @__PURE__ */ ((RecordMode2) => {
+      RecordMode2["SOUND_ON_SOUND"] = "sound_on_sound";
+      RecordMode2["NON_LAYERED"] = "non_layered";
+      RecordMode2["LAYERED"] = "layered";
+      return RecordMode2;
+    })(RecordMode || {});
+  }
+});
+
 // core/src/domain/Playlist.ts
 var Playlist;
 var init_Playlist = __esm({
@@ -2392,6 +2407,36 @@ var init_Playlist = __esm({
       getRegion(regionId) {
         return this.regions.find((r) => r.id === regionId);
       }
+      getTopLayer() {
+        if (this.regions.length === 0) {
+          return -1;
+        }
+        return Math.max(...this.regions.map((region) => region.layer));
+      }
+      setRegionLayer(regionId, layer) {
+        const region = this.getRegion(regionId);
+        if (!region) {
+          throw new Error(`Region ${regionId} not found`);
+        }
+        region.layer = Math.max(0, Math.trunc(layer));
+        this.notifyRegionChanged(region);
+      }
+      setRegionOpaque(regionId, opaque) {
+        const region = this.getRegion(regionId);
+        if (!region) {
+          throw new Error(`Region ${regionId} not found`);
+        }
+        region.opaque = opaque;
+        this.notifyRegionChanged(region);
+      }
+      insertRecordedRegion(region, mode) {
+        region.layer = this.getTopLayer() + 1;
+        region.opaque = mode !== "sound_on_sound" /* SOUND_ON_SOUND */;
+        if (mode === "non_layered" /* NON_LAYERED */) {
+          this.replaceOverlappingRegions(region);
+        }
+        this.addRegion(region);
+      }
       getRegionsInRange(start, end) {
         return this.regions.filter((r) => r.end > start && r.start < end);
       }
@@ -2408,6 +2453,85 @@ var init_Playlist = __esm({
           }
         }
         this.sortRegions();
+      }
+      notifyRegionChanged(region) {
+        this.sortRegions();
+        this.updateCrossfadesForRegion(region.id);
+        this._thawList.queueEmission(this.regionChanged, region);
+      }
+      replaceOverlappingRegions(recordedRegion) {
+        const overlappingRegions = [...this.getOverlappingRegions(recordedRegion)];
+        for (const existingRegion of overlappingRegions) {
+          this.replaceOverlap(existingRegion, recordedRegion);
+        }
+      }
+      replaceOverlap(existingRegion, recordedRegion) {
+        const existingEnd = existingRegion.end;
+        const coversExisting = recordedRegion.start <= existingRegion.start && recordedRegion.end >= existingEnd;
+        if (coversExisting) {
+          this.removeRegion(existingRegion.id);
+          return;
+        }
+        const splitsExisting = existingRegion.start < recordedRegion.start && existingEnd > recordedRegion.end;
+        if (splitsExisting) {
+          this.splitAroundRecordedRegion(existingRegion, recordedRegion);
+          return;
+        }
+        if (existingRegion.start < recordedRegion.start) {
+          this.trimExistingRegionEnd(existingRegion, recordedRegion.start);
+          return;
+        }
+        this.trimExistingRegionStart(existingRegion, recordedRegion.end);
+      }
+      trimExistingRegionEnd(region, end) {
+        region.length = end - region.start;
+        region.fadeOut = 0;
+        region.transients = region.transients.filter((position) => {
+          return position < region.length;
+        });
+        this.notifyRegionChanged(region);
+      }
+      trimExistingRegionStart(region, start) {
+        const trimLength = start - region.start;
+        const oldEnd = region.end;
+        region.start = start;
+        region.sourceStart += trimLength;
+        region.length = oldEnd - start;
+        region.fadeIn = 0;
+        region.transients = region.transients.map((position) => position - trimLength).filter((position) => position >= 0 && position < region.length);
+        this.notifyRegionChanged(region);
+      }
+      splitAroundRecordedRegion(region, recordedRegion) {
+        const rightRegion = this.createRightSegment(region, recordedRegion.end);
+        this.trimExistingRegionEnd(region, recordedRegion.start);
+        this.addRegion(rightRegion);
+      }
+      createRightSegment(region, start) {
+        const timelineOffset = start - region.start;
+        const rightRegion = new Region(
+          crypto.randomUUID(),
+          region.sourceId,
+          start,
+          region.end - start,
+          region.sourceStart + timelineOffset,
+          `${region.name}-R`,
+          region.layer
+        );
+        rightRegion.gain = region.gain;
+        rightRegion.muted = region.muted;
+        rightRegion.opaque = region.opaque;
+        rightRegion.fadeIn = 0;
+        rightRegion.fadeOut = region.fadeOut;
+        rightRegion.fadeInShape = region.fadeInShape;
+        rightRegion.fadeOutShape = region.fadeOutShape;
+        rightRegion.playbackRate = region.playbackRate;
+        rightRegion.stretch = region.stretch;
+        rightRegion.pitchSemitones = region.pitchSemitones;
+        rightRegion.syncPosition = region.syncPosition;
+        rightRegion.transients = region.transients.filter((position) => position >= timelineOffset).map((position) => position - timelineOffset);
+        rightRegion.locked = region.locked;
+        rightRegion.timeDomain = region.timeDomain;
+        return rightRegion;
       }
       sortRegions() {
         this.regions.sort((a, b) => a.start - b.start);
@@ -2527,7 +2651,7 @@ var init_Playlist = __esm({
         }
         for (const r of this.regions) {
           if (r.id === regionId) continue;
-          if (!r.muted && r.covers(frame) && r.layer > region.layer) {
+          if (!r.muted && r.opaque && r.covers(frame) && r.layer > region.layer) {
             return false;
           }
         }
@@ -2650,12 +2774,21 @@ var init_Playlist = __esm({
             this.removeCrossfade(xfade.id);
             continue;
           }
+          if (otherRegion.layer !== region.layer) {
+            this.removeCrossfade(xfade.id);
+            continue;
+          }
           const overlap = Crossfade.calculateOverlap(region, otherRegion);
           if (!overlap) {
             this.removeCrossfade(xfade.id);
           } else {
             xfade.setPosition(overlap.position);
             xfade.setLength(overlap.length);
+          }
+        }
+        for (const otherRegion of this.getOverlappingRegions(region)) {
+          if (otherRegion.layer === region.layer) {
+            this.autoCreateCrossfade(region, otherRegion);
           }
         }
       }
@@ -2699,6 +2832,7 @@ var init_Playlist = __esm({
           );
           rightRegion.gain = region.gain;
           rightRegion.muted = region.muted;
+          rightRegion.opaque = region.opaque;
           rightRegion.fadeOut = region.fadeOut;
           rightRegion.fadeOutShape = region.fadeOutShape;
           region.fadeOut = 0;
@@ -2725,6 +2859,7 @@ var init_Playlist = __esm({
         );
         newRegion.gain = source.gain;
         newRegion.muted = source.muted;
+        newRegion.opaque = source.opaque;
         newRegion.fadeIn = source.fadeIn;
         newRegion.fadeOut = source.fadeOut;
         newRegion.fadeInShape = source.fadeInShape;
@@ -2830,6 +2965,7 @@ var init_Track = __esm({
         this._alignStyle = "existing_material";
         // Track mode
         this._trackMode = "normal";
+        this._recordMode = "layered" /* LAYERED */;
         // Enhanced bounce/freeze state
         this._bounceProgress = 0;
         // Signals
@@ -2845,6 +2981,7 @@ var init_Track = __esm({
         this.frozenChanged = new Signal();
         this.alignStyleChanged = new Signal();
         this.trackModeChanged = new Signal();
+        this.recordModeChanged = new Signal();
         this.bounceProgressChanged = new Signal();
         this.bounceCompleted = new Signal();
         this.id = id;
@@ -3043,6 +3180,16 @@ var init_Track = __esm({
           this._trackMode = mode;
           this.trackModeChanged.emit(mode);
         }
+      }
+      get recordMode() {
+        return this._recordMode;
+      }
+      setRecordMode(mode) {
+        if (this._recordMode === mode) {
+          return;
+        }
+        this._recordMode = mode;
+        this.recordModeChanged.emit(mode);
       }
     };
   }
@@ -7046,6 +7193,7 @@ var init_Session = __esm({
             monitorMode: t.monitorMode,
             trimGain: t.trimGain,
             comment: t.comment,
+            recordMode: t.recordMode,
             regions: t.playlist.getRegions().map((r) => ({
               id: r.id,
               sourceId: r.sourceId,
@@ -7056,6 +7204,7 @@ var init_Session = __esm({
               gain: r.gain,
               muted: r.muted,
               layer: r.layer,
+              opaque: r.opaque,
               fadeIn: r.fadeIn,
               fadeOut: r.fadeOut,
               playbackRate: r.playbackRate,
@@ -7149,6 +7298,9 @@ var init_Session = __esm({
           if (trackData.trimGain !== void 0)
             track.setTrimGain(trackData.trimGain);
           if (trackData.comment !== void 0) track.comment = trackData.comment;
+          if (trackData.recordMode !== void 0) {
+            track.setRecordMode(trackData.recordMode);
+          }
           for (const regionData of trackData.regions) {
             const region = new Region(
               regionData.id,
@@ -7161,6 +7313,7 @@ var init_Session = __esm({
             );
             region.gain = regionData.gain;
             region.muted = regionData.muted;
+            region.opaque = regionData.opaque ?? true;
             region.fadeIn = regionData.fadeIn;
             region.fadeOut = regionData.fadeOut;
             region.playbackRate = regionData.playbackRate;
@@ -23031,16 +23184,7 @@ function formatClock(frame, sampleRate, mode, bpm = 120, timeSigNum = 4) {
 // core/src/index.ts
 init_types();
 init_TempoMap();
-
-// core/src/domain/RecordMode.ts
-var RecordMode = /* @__PURE__ */ ((RecordMode2) => {
-  RecordMode2["SOUND_ON_SOUND"] = "sound_on_sound";
-  RecordMode2["NON_LAYERED"] = "non_layered";
-  RecordMode2["LAYERED"] = "layered";
-  return RecordMode2;
-})(RecordMode || {});
-
-// core/src/index.ts
+init_RecordMode();
 init_MonitorMode();
 
 // core/src/domain/RegionClipboard.ts
@@ -24087,14 +24231,17 @@ var AudioEngine = class _AudioEngine {
       this.cancelFrame(this.syncId);
       this.syncId = null;
     }
-    this.signalDisposers.forEach((d) => d.dispose());
+    this.disconnectSessionSignals();
+  }
+  disconnectSessionSignals() {
+    this.signalDisposers.forEach((disposer) => disposer.dispose());
     this.signalDisposers = [];
     this.trackDisposers.forEach(
-      (disposers) => disposers.forEach((d) => d.dispose())
+      (disposers) => disposers.forEach((disposer) => disposer.dispose())
     );
     this.trackDisposers.clear();
     this.sendBusDisposers.forEach(
-      (disposers) => disposers.forEach((d) => d.dispose())
+      (disposers) => disposers.forEach((disposer) => disposer.dispose())
     );
     this.sendBusDisposers.clear();
   }
@@ -24140,6 +24287,7 @@ var AudioEngine = class _AudioEngine {
       gain: r.gain,
       muted: r.muted,
       layer: r.layer,
+      opaque: r.opaque,
       fadeIn: r.fadeIn,
       fadeOut: r.fadeOut,
       playbackRate: r.playbackRate,
@@ -24235,68 +24383,13 @@ var AudioEngine = class _AudioEngine {
             track.route.output.id
           );
         }
+        const disposers = [];
         track.route.processors.forEach((proc, index) => {
           const type = this.getProcessorType(proc);
           this.backend.addProcessor(track.id, proc.id, type, index);
-          this.connectProcessorSignals(track.id, proc);
+          this.connectProcessorSignals(track.id, proc, disposers);
         });
-        const disposers = [];
-        disposers.push(
-          track.route.processorAdded.connect((proc) => {
-            const index = track.route.processors.indexOf(proc);
-            const type = this.getProcessorType(proc);
-            this.backend.addProcessor(track.id, proc.id, type, index);
-            this.connectProcessorSignals(track.id, proc);
-          })
-        );
-        disposers.push(
-          track.route.processorRemoved.connect((procId) => {
-            this.backend.removeProcessor(track.id, procId);
-          })
-        );
-        disposers.push(
-          track.playlist.regionAdded.connect((region) => {
-            const dto = _AudioEngine.toRegionDTO(region);
-            this.backend.scheduleRegion(track.id, dto);
-          })
-        );
-        disposers.push(
-          track.playlist.regionRemoved.connect((regionId) => {
-            this.backend.removeRegion(track.id, regionId);
-          })
-        );
-        disposers.push(
-          track.playlist.regionChanged.connect((region) => {
-            this.updateRegion(track.id, region);
-          })
-        );
-        disposers.push(
-          track.playlist.midiRegionAdded.connect((midiRegion) => {
-            const dto = {
-              id: midiRegion.id,
-              name: midiRegion.name,
-              start: midiRegion.start,
-              length: midiRegion.length,
-              end: midiRegion.end,
-              muted: midiRegion.muted,
-              notes: midiRegion.getNotes().map((n) => ({
-                id: n.id,
-                pitch: n.pitch,
-                velocity: n.velocity,
-                startFrame: n.startFrame,
-                durationFrames: n.durationFrames,
-                channel: n.channel
-              }))
-            };
-            this.backend.scheduleMidiRegion(track.id, dto);
-          })
-        );
-        disposers.push(
-          track.playlist.midiRegionRemoved.connect((regionId) => {
-            this.backend.removeMidiRegion(track.id, regionId);
-          })
-        );
-        this.bindTrackSignals(track, disposers);
+        this.bindTrackRuntimeSignals(track, disposers);
         this.trackDisposers.set(track.id, disposers);
       })
     );
@@ -24375,18 +24468,71 @@ var AudioEngine = class _AudioEngine {
         this.backend.removeSendBus(sendBusId);
       })
     );
-    this.session.tracks.forEach((t) => {
+    this.session.tracks.forEach((track) => {
       const disposers = [];
-      this.bindTrackSignals(t, disposers);
+      track.route.processors.forEach((processor) => {
+        this.connectProcessorSignals(track.id, processor, disposers);
+      });
+      this.bindTrackRuntimeSignals(track, disposers);
       if (disposers.length > 0) {
-        const existing = this.trackDisposers.get(t.id);
+        const existing = this.trackDisposers.get(track.id);
         if (existing) {
           existing.push(...disposers);
         } else {
-          this.trackDisposers.set(t.id, disposers);
+          this.trackDisposers.set(track.id, disposers);
         }
       }
     });
+  }
+  bindTrackRuntimeSignals(track, disposers) {
+    disposers.push(
+      track.route.processorAdded.connect((processor) => {
+        const index = track.route.processors.indexOf(processor);
+        const type = this.getProcessorType(processor);
+        this.backend.addProcessor(track.id, processor.id, type, index);
+        this.connectProcessorSignals(track.id, processor, disposers);
+      }),
+      track.route.processorRemoved.connect((processorId) => {
+        this.backend.removeProcessor(track.id, processorId);
+      }),
+      track.playlist.regionAdded.connect((region) => {
+        this.backend.scheduleRegion(track.id, _AudioEngine.toRegionDTO(region));
+      }),
+      track.playlist.regionRemoved.connect((regionId) => {
+        this.backend.removeRegion(track.id, regionId);
+      }),
+      track.playlist.regionChanged.connect((region) => {
+        this.updateRegion(track.id, region);
+      }),
+      track.playlist.midiRegionAdded.connect((midiRegion) => {
+        this.backend.scheduleMidiRegion(
+          track.id,
+          _AudioEngine.toMidiRegionDTO(midiRegion)
+        );
+      }),
+      track.playlist.midiRegionRemoved.connect((regionId) => {
+        this.backend.removeMidiRegion(track.id, regionId);
+      })
+    );
+    this.bindTrackSignals(track, disposers);
+  }
+  static toMidiRegionDTO(midiRegion) {
+    return {
+      id: midiRegion.id,
+      name: midiRegion.name,
+      start: midiRegion.start,
+      length: midiRegion.length,
+      end: midiRegion.end,
+      muted: midiRegion.muted,
+      notes: midiRegion.getNotes().map((note) => ({
+        id: note.id,
+        pitch: note.pitch,
+        velocity: note.velocity,
+        startFrame: note.startFrame,
+        durationFrames: note.durationFrames,
+        channel: note.channel
+      }))
+    };
   }
   bindTrackSignals(track, disposers = []) {
     if (track.monitorChanged) {
@@ -24463,100 +24609,129 @@ var AudioEngine = class _AudioEngine {
   }
   connectMasterProcessorSignals(proc) {
     if (proc instanceof GainProcessor) {
-      proc.gainChanged.connect((val) => {
-        this.backend.setMasterGain(val);
-      });
+      this.signalDisposers.push(
+        proc.gainChanged.connect((val) => {
+          this.backend.setMasterGain(val);
+        })
+      );
     }
     if (proc instanceof PluginInsert && proc.plugin && proc.plugin.parameterChanged) {
-      proc.plugin.parameterChanged.connect(
-        ({ id, value }) => {
-          this.backend.setMasterProcessorParameter(proc.id, id, value);
-        }
+      this.signalDisposers.push(
+        proc.plugin.parameterChanged.connect(
+          ({ id, value }) => {
+            this.backend.setMasterProcessorParameter(proc.id, id, value);
+          }
+        )
       );
     }
   }
-  connectProcessorSignals(trackId, proc) {
+  connectProcessorSignals(trackId, proc, disposers) {
     if (proc instanceof GainProcessor) {
-      proc.gainChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "gain", val);
-      });
+      disposers.push(
+        proc.gainChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "gain", val);
+        })
+      );
     }
     if (proc instanceof Panner) {
-      proc.azimuthChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
-      });
-      proc.widthChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "width", val);
-      });
+      disposers.push(
+        proc.azimuthChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
+        }),
+        proc.widthChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "width", val);
+        })
+      );
     } else if (proc instanceof PanProcessor) {
-      proc.panChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
-      });
-      proc.widthChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "width", val);
-      });
+      disposers.push(
+        proc.panChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "pan", val);
+        }),
+        proc.widthChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "width", val);
+        })
+      );
     }
     if (proc instanceof PolarityProcessor) {
-      proc.polarityChanged.connect((inverted) => {
-        this.backend.setProcessorParameter(
-          trackId,
-          proc.id,
-          "polarity",
-          inverted ? 1 : 0
-        );
-      });
+      disposers.push(
+        proc.polarityChanged.connect((inverted) => {
+          this.backend.setProcessorParameter(
+            trackId,
+            proc.id,
+            "polarity",
+            inverted ? 1 : 0
+          );
+        })
+      );
     }
     if (proc instanceof SendProcessor) {
-      proc.levelChanged.connect((val) => {
-        this.backend.setProcessorParameter(trackId, proc.id, "level", val);
-      });
-      proc.preFaderChanged.connect((preFader) => {
-        this.backend.setProcessorParameter(
-          trackId,
-          proc.id,
-          "preFader",
-          preFader ? 1 : 0
-        );
-      });
-      proc.muteChanged.connect((muted) => {
-        this.backend.setProcessorParameter(
-          trackId,
-          proc.id,
-          "muted",
-          muted ? 1 : 0
-        );
-      });
+      disposers.push(
+        proc.levelChanged.connect((val) => {
+          this.backend.setProcessorParameter(trackId, proc.id, "level", val);
+        }),
+        proc.preFaderChanged.connect((preFader) => {
+          this.backend.setProcessorParameter(
+            trackId,
+            proc.id,
+            "preFader",
+            preFader ? 1 : 0
+          );
+        }),
+        proc.muteChanged.connect((muted) => {
+          this.backend.setProcessorParameter(
+            trackId,
+            proc.id,
+            "muted",
+            muted ? 1 : 0
+          );
+        })
+      );
     }
     if (proc instanceof PluginInsert && proc.plugin && proc.plugin.parameterChanged) {
-      proc.plugin.parameterChanged.connect(
-        ({ id, value }) => {
-          this.backend.setProcessorParameter(trackId, proc.id, id, value);
-        }
+      disposers.push(
+        proc.plugin.parameterChanged.connect(
+          ({ id, value }) => {
+            this.backend.setProcessorParameter(trackId, proc.id, id, value);
+          }
+        )
       );
     }
     if (proc.automations) {
       proc.automations.forEach((list, param) => {
-        this.bindAutomationList(trackId, proc.id, param, list);
+        this.bindAutomationList(trackId, proc.id, param, list, disposers);
       });
     }
     if (proc.automationAdded) {
-      proc.automationAdded.connect(
-        ({ paramName, list }) => {
-          this.bindAutomationList(trackId, proc.id, paramName, list);
-        }
+      disposers.push(
+        proc.automationAdded.connect(
+          ({
+            paramName,
+            list
+          }) => {
+            this.bindAutomationList(
+              trackId,
+              proc.id,
+              paramName,
+              list,
+              disposers
+            );
+          }
+        )
       );
     }
   }
-  bindAutomationList(trackId, procId, param, list) {
+  bindAutomationList(trackId, procId, param, list, disposers) {
     if (list.changed) {
-      list.changed.connect(() => {
-        logger.debug(
-          "AudioEngine",
-          `Automation changed for ${trackId}:${procId}:${param}`
-        );
-        const points2 = list.getPoints();
-        this.backend.setProcessorAutomation(trackId, procId, param, points2);
-      });
+      disposers.push(
+        list.changed.connect(() => {
+          logger.debug(
+            "AudioEngine",
+            `Automation changed for ${trackId}:${procId}:${param}`
+          );
+          const points2 = list.getPoints();
+          this.backend.setProcessorAutomation(trackId, procId, param, points2);
+        })
+      );
       const points = list.getPoints();
       if (points.length > 0) {
         this.backend.setProcessorAutomation(trackId, procId, param, points);
@@ -24947,7 +25122,7 @@ var AudioEngine = class _AudioEngine {
             0,
             "Recording"
           );
-          track.playlist.addRegion(region);
+          track.playlist.insertRecordedRegion(region, track.recordMode);
           logger.debug(
             "AudioEngine",
             `Created Region: ${url}, Start: ${startFrame}, Dur: ${durationFrames}`
@@ -25046,11 +25221,13 @@ var AudioEngine = class _AudioEngine {
   // Session Management
   loadSession(newSession) {
     this.stop();
+    this.disconnectSessionSignals();
     this.session = newSession;
     this.setupSessionListeners();
   }
   loadSessionFromSnapshot(snapshot) {
     this.stop();
+    this.disconnectSessionSignals();
     this.session = Session.fromJSON(snapshot);
     this.setupSessionListeners();
   }
@@ -28895,6 +29072,8 @@ var CommandType = {
   TRIM_REGION_TO_RANGE: "TRIM_REGION_TO_RANGE",
   TRIM_TO_ADJACENT_REGION: "TRIM_TO_ADJACENT_REGION",
   SET_REGION_FADES: "SET_REGION_FADES",
+  SET_REGION_LAYER: "SET_REGION_LAYER",
+  SET_REGION_OPAQUE: "SET_REGION_OPAQUE",
   MERGE_REGIONS: "MERGE_REGIONS",
   SELECT_REGIONS: "SELECT_REGIONS",
   // Send Bus (Side-chain)
@@ -28997,6 +29176,7 @@ var CommandType = {
   SET_TRACK_SOLO_ISOLATE: "SET_TRACK_SOLO_ISOLATE",
   SET_TRACK_SOLO_SAFE: "SET_TRACK_SOLO_SAFE",
   SET_TRACK_COMMENT: "SET_TRACK_COMMENT",
+  SET_TRACK_RECORD_MODE: "SET_TRACK_RECORD_MODE",
   // Phase 15: Additional
   SET_TRACK_PAN_WIDTH: "SET_TRACK_PAN_WIDTH",
   SET_AUTOMATION_MODE: "SET_AUTOMATION_MODE",
@@ -29151,6 +29331,22 @@ var SetRegionFadesCommandSchema = z.object({
     regionId: z.string(),
     fadeIn: z.number().optional(),
     fadeOut: z.number().optional()
+  })
+});
+var SetRegionLayerCommandSchema = z.object({
+  type: z.literal(CommandType.SET_REGION_LAYER),
+  payload: z.object({
+    trackId: z.string(),
+    regionId: z.string(),
+    layer: z.number().int().nonnegative()
+  })
+});
+var SetRegionOpaqueCommandSchema = z.object({
+  type: z.literal(CommandType.SET_REGION_OPAQUE),
+  payload: z.object({
+    trackId: z.string(),
+    regionId: z.string(),
+    opaque: z.boolean()
   })
 });
 var MergeRegionsCommandSchema = z.object({
@@ -29655,6 +29851,13 @@ var SetTrackMonitorModeCommandSchema = z.object({
     mode: z.enum(["auto", "input", "disk", "external"])
   })
 });
+var SetTrackRecordModeCommandSchema = z.object({
+  type: z.literal(CommandType.SET_TRACK_RECORD_MODE),
+  payload: z.object({
+    trackId: z.string(),
+    mode: z.enum(["sound_on_sound", "non_layered", "layered"])
+  })
+});
 var SetTrackTrimGainCommandSchema = z.object({
   type: z.literal(CommandType.SET_TRACK_TRIM_GAIN),
   payload: z.object({
@@ -29844,6 +30047,8 @@ var AudioCommandSchema = z.discriminatedUnion("type", [
   ResizeRegionCommandSchema,
   TrimRegionCommandSchema,
   SetRegionFadesCommandSchema,
+  SetRegionLayerCommandSchema,
+  SetRegionOpaqueCommandSchema,
   MergeRegionsCommandSchema,
   z.object({
     type: z.literal(CommandType.SET_TEMPO),
@@ -30180,6 +30385,7 @@ var AudioCommandSchema = z.discriminatedUnion("type", [
   RenameMarkerCommandSchema,
   SetMarkerLockedCommandSchema,
   SetTrackMonitorModeCommandSchema,
+  SetTrackRecordModeCommandSchema,
   SetTrackTrimGainCommandSchema,
   SetTrackSoloIsolateCommandSchema,
   SetTrackSoloSafeCommandSchema,
@@ -30272,6 +30478,7 @@ var CommandHistory = class {
     this.redoStack = [];
     this._depth = 0;
     // 0 = unlimited
+    this.operationTail = Promise.resolve();
     // Active transaction
     this._activeTransaction = null;
     // Signals
@@ -30301,17 +30508,36 @@ var CommandHistory = class {
     }
   }
   // --- Execute ---
-  async execute(command, label) {
-    await command.execute();
+  execute(command, label) {
+    return this.enqueueOperation(async () => {
+      await command.execute();
+      this.store(command, label);
+    });
+  }
+  /**
+   * 도메인 서비스가 이미 적용한 변경을 실행 없이 기록합니다.
+   * 기능 실행과 History 저장을 분리할 때 사용합니다.
+   */
+  record(command, label) {
+    return this.enqueueOperation(async () => {
+      this.store(command, label);
+    });
+  }
+  store(command, label, timestamp = Date.now()) {
     const entryLabel = label || command.constructor.name.replace("Command", "");
     this.undoStack.push({
       command,
       label: entryLabel,
-      timestamp: Date.now()
+      timestamp
     });
     this.trimUndoStack();
     this.redoStack = [];
     this.historyChanged.emit();
+  }
+  enqueueOperation(operation) {
+    const result = this.operationTail.then(operation);
+    this.operationTail = result.catch(() => void 0);
+    return result;
   }
   // --- Transaction grouping ---
   beginTransaction(name) {
@@ -30329,50 +30555,71 @@ var CommandHistory = class {
     }
     const txn = this._activeTransaction;
     this._activeTransaction = null;
-    this.undoStack.push({
-      command: txn,
-      label: txn.name,
-      timestamp: txn.timestamp
+    return this.enqueueOperation(async () => {
+      this.store(txn, txn.name, txn.timestamp);
     });
-    this.trimUndoStack();
-    this.redoStack = [];
-    this.historyChanged.emit();
   }
   async abortTransaction() {
     if (!this._activeTransaction) return;
     const txn = this._activeTransaction;
     this._activeTransaction = null;
-    await txn.undo();
+    return this.enqueueOperation(async () => {
+      await txn.undo();
+    });
   }
   get hasActiveTransaction() {
     return this._activeTransaction !== null;
   }
   // --- Undo / Redo with begin/end signals ---
-  async undo() {
-    const entry = this.undoStack.pop();
-    if (entry) {
+  undo() {
+    return this.enqueueOperation(async () => {
+      await this.undoOne();
+    });
+  }
+  redo() {
+    return this.enqueueOperation(async () => {
+      await this.redoOne();
+    });
+  }
+  async undoOne(emitSignals = true) {
+    const entry = this.undoStack[this.undoStack.length - 1];
+    if (!entry) return false;
+    if (emitSignals) {
       this.beginUndoRedo.emit();
-      try {
-        await entry.command.undo();
-        this.redoStack.push(entry);
-      } finally {
+    }
+    try {
+      await entry.command.undo();
+      this.undoStack.pop();
+      this.redoStack.push(entry);
+      if (emitSignals) {
+        this.historyChanged.emit();
+      }
+      return true;
+    } finally {
+      if (emitSignals) {
         this.endUndoRedo.emit();
       }
-      this.historyChanged.emit();
     }
   }
-  async redo() {
-    const entry = this.redoStack.pop();
-    if (entry) {
+  async redoOne(emitSignals = true) {
+    const entry = this.redoStack[this.redoStack.length - 1];
+    if (!entry) return false;
+    if (emitSignals) {
       this.beginUndoRedo.emit();
-      try {
-        await entry.command.redo();
-        this.undoStack.push(entry);
-        this.trimUndoStack();
-      } finally {
+    }
+    try {
+      await entry.command.redo();
+      this.redoStack.pop();
+      this.undoStack.push(entry);
+      this.trimUndoStack();
+      if (emitSignals) {
+        this.historyChanged.emit();
+      }
+      return true;
+    } finally {
+      if (emitSignals) {
         this.endUndoRedo.emit();
       }
-      this.historyChanged.emit();
     }
   }
   // --- Batch undo / redo ---
@@ -30386,22 +30633,25 @@ var CommandHistory = class {
    * @param count - Number of undo steps to perform.  Clamped to the
    *   available undo depth.
    */
-  async undoMultiple(count) {
-    const steps = Math.min(Math.max(0, count), this.undoStack.length);
-    if (steps === 0) return;
-    this.beginUndoRedo.emit();
-    try {
-      for (let i = 0; i < steps; i++) {
-        const entry = this.undoStack.pop();
-        if (entry) {
-          await entry.command.undo();
-          this.redoStack.push(entry);
+  undoMultiple(count) {
+    return this.enqueueOperation(async () => {
+      const steps = Math.min(Math.max(0, count), this.undoStack.length);
+      if (steps === 0) {
+        return;
+      }
+      let changed = false;
+      this.beginUndoRedo.emit();
+      try {
+        for (let i = 0; i < steps; i++) {
+          changed = await this.undoOne(false) || changed;
+        }
+      } finally {
+        this.endUndoRedo.emit();
+        if (changed) {
+          this.historyChanged.emit();
         }
       }
-    } finally {
-      this.endUndoRedo.emit();
-    }
-    this.historyChanged.emit();
+    });
   }
   /**
    * Redo multiple transactions at once.
@@ -30413,23 +30663,25 @@ var CommandHistory = class {
    * @param count - Number of redo steps to perform.  Clamped to the
    *   available redo depth.
    */
-  async redoMultiple(count) {
-    const steps = Math.min(Math.max(0, count), this.redoStack.length);
-    if (steps === 0) return;
-    this.beginUndoRedo.emit();
-    try {
-      for (let i = 0; i < steps; i++) {
-        const entry = this.redoStack.pop();
-        if (entry) {
-          await entry.command.redo();
-          this.undoStack.push(entry);
+  redoMultiple(count) {
+    return this.enqueueOperation(async () => {
+      const steps = Math.min(Math.max(0, count), this.redoStack.length);
+      if (steps === 0) {
+        return;
+      }
+      let changed = false;
+      this.beginUndoRedo.emit();
+      try {
+        for (let i = 0; i < steps; i++) {
+          changed = await this.redoOne(false) || changed;
+        }
+      } finally {
+        this.endUndoRedo.emit();
+        if (changed) {
+          this.historyChanged.emit();
         }
       }
-      this.trimUndoStack();
-    } finally {
-      this.endUndoRedo.emit();
-    }
-    this.historyChanged.emit();
+    });
   }
   // --- State queries ---
   get canUndo() {
@@ -30469,11 +30721,13 @@ var CommandHistory = class {
   /**
    * Undo to a specific point in history (undo multiple steps).
    */
-  async undoTo(index) {
-    const stepsToUndo = this.undoStack.length - index;
-    for (let i = 0; i < stepsToUndo; i++) {
-      await this.undo();
-    }
+  undoTo(index) {
+    return this.enqueueOperation(async () => {
+      const stepsToUndo = this.undoStack.length - index;
+      for (let i = 0; i < stepsToUndo; i++) {
+        await this.undoOne();
+      }
+    });
   }
   /**
    * Get the current position in history (number of executed commands).
@@ -30639,6 +30893,198 @@ var RemoveTempoChangeCommand = class {
   }
 };
 
+// core/src/commands/state/PlaylistStateDiffCommand.ts
+init_Crossfade();
+function capturePlaylistStates(playlists) {
+  return playlists.map((playlist) => ({
+    playlist,
+    regions: [...playlist.getRegions()],
+    crossfades: playlist.getCrossfades().map((crossfade) => ({
+      id: crossfade.id,
+      inRegionId: crossfade.inRegionId,
+      outRegionId: crossfade.outRegionId,
+      position: crossfade.position,
+      length: crossfade.length,
+      type: crossfade.type,
+      fadeInCurve: crossfade.fadeInCurve,
+      fadeOutCurve: crossfade.fadeOutCurve,
+      active: crossfade.active
+    }))
+  }));
+}
+var PlaylistStateDiffCommand = class {
+  constructor(before, after) {
+    this.before = before;
+    this.after = after;
+  }
+  async execute() {
+    this.apply(this.after);
+  }
+  async undo() {
+    this.apply(this.before);
+  }
+  async redo() {
+    this.apply(this.after);
+  }
+  apply(states) {
+    for (const state of states) {
+      this.applyPlaylistState(state);
+    }
+  }
+  applyPlaylistState(state) {
+    const { playlist } = state;
+    const desiredRegions = new Set(state.regions);
+    playlist.freeze();
+    try {
+      for (const currentRegion of [...playlist.getRegions()]) {
+        if (!desiredRegions.has(currentRegion)) {
+          playlist.removeRegion(currentRegion.id);
+        }
+      }
+      for (const desiredRegion of state.regions) {
+        const currentRegion = playlist.getRegion(desiredRegion.id);
+        if (currentRegion === desiredRegion) {
+          continue;
+        }
+        if (currentRegion) {
+          playlist.removeRegion(currentRegion.id);
+        }
+        playlist.addRegion(desiredRegion);
+      }
+      for (const crossfade of [...playlist.getCrossfades()]) {
+        playlist.removeCrossfade(crossfade.id);
+      }
+      for (const crossfadeState of state.crossfades) {
+        playlist.addCrossfade(this.restoreCrossfade(crossfadeState));
+      }
+    } finally {
+      playlist.thaw();
+    }
+  }
+  restoreCrossfade(state) {
+    const crossfade = new Crossfade(
+      state.id,
+      state.inRegionId,
+      state.outRegionId,
+      state.position,
+      state.length,
+      state.type,
+      state.fadeInCurve,
+      state.fadeOutCurve
+    );
+    crossfade.setActive(state.active);
+    return crossfade;
+  }
+};
+
+// core/src/commands/state/RegionStateDiffCommand.ts
+function captureRegionStates(playlists) {
+  const states = /* @__PURE__ */ new Map();
+  for (const playlist of playlists) {
+    for (const region of playlist.getRegions()) {
+      states.set(region, {
+        region,
+        start: region.start,
+        length: region.length,
+        sourceStart: region.sourceStart,
+        gain: region.gain,
+        muted: region.muted,
+        layer: region.layer,
+        opaque: region.opaque,
+        fadeIn: region.fadeIn,
+        fadeOut: region.fadeOut,
+        fadeInShape: region.fadeInShape,
+        fadeOutShape: region.fadeOutShape,
+        playbackRate: region.playbackRate,
+        stretch: region.stretch,
+        pitchSemitones: region.pitchSemitones,
+        syncPosition: region.syncPosition,
+        transients: [...region.transients],
+        locked: region.locked,
+        timeDomain: region.timeDomain
+      });
+    }
+  }
+  return Array.from(states.values());
+}
+var RegionStateDiffCommand = class {
+  constructor(playlists, before, after) {
+    this.playlists = playlists;
+    this.before = before;
+    this.after = after;
+  }
+  async execute() {
+    this.apply(this.after);
+  }
+  async undo() {
+    this.apply(this.before);
+  }
+  async redo() {
+    this.apply(this.after);
+  }
+  apply(states) {
+    for (const state of states) {
+      const { region } = state;
+      region.start = state.start;
+      region.length = state.length;
+      region.sourceStart = state.sourceStart;
+      region.gain = state.gain;
+      region.muted = state.muted;
+      region.layer = state.layer;
+      region.opaque = state.opaque;
+      region.fadeIn = state.fadeIn;
+      region.fadeOut = state.fadeOut;
+      region.fadeInShape = state.fadeInShape;
+      region.fadeOutShape = state.fadeOutShape;
+      region.playbackRate = state.playbackRate;
+      region.stretch = state.stretch;
+      region.pitchSemitones = state.pitchSemitones;
+      region.syncPosition = state.syncPosition;
+      region.transients = [...state.transients];
+      region.locked = state.locked;
+      region.timeDomain = state.timeDomain;
+      const currentPlaylist = this.playlists.find(
+        (playlist) => playlist.getRegion(region.id) === region
+      );
+      currentPlaylist?.notifyRegionChanged(region);
+    }
+  }
+};
+
+// core/src/commands/history/PlaylistEditHistory.ts
+function capturePlaylistEditState(playlists) {
+  return {
+    playlists,
+    regions: captureRegionStates(playlists),
+    playlistStates: capturePlaylistStates(playlists)
+  };
+}
+function createPlaylistEditTransaction(name, before, after) {
+  const transaction = new UndoTransaction(name);
+  transaction.addCommand(
+    new PlaylistStateDiffCommand(before.playlistStates, after.playlistStates)
+  );
+  transaction.addCommand(
+    new RegionStateDiffCommand(after.playlists, before.regions, after.regions)
+  );
+  return transaction;
+}
+function hasPlaylistMembershipChanged(before, after) {
+  for (const afterState of after.playlistStates) {
+    const beforeState = before.playlistStates.find((state) => {
+      return state.playlist === afterState.playlist;
+    });
+    if (!beforeState || beforeState.regions.length !== afterState.regions.length) {
+      return true;
+    }
+    const beforeRegions = new Set(beforeState.regions);
+    if (afterState.regions.some((region) => !beforeRegions.has(region))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // core/src/commands/handlers/TransportHandler.ts
 var TransportHandler = class {
   constructor() {
@@ -30678,9 +31124,21 @@ var TransportHandler = class {
       case CommandType.START_RECORDING:
         await audioEngine.startRecording();
         return { success: true, message: "Recording started" };
-      case CommandType.STOP_RECORDING:
+      case CommandType.STOP_RECORDING: {
+        const playlists = audioEngine.session.tracks.filter((track) => track.armed && track.type !== "MIDI" /* MIDI */).map((track) => track.playlist);
+        const before = capturePlaylistEditState(playlists);
         await audioEngine.stopRecording();
+        const after = capturePlaylistEditState(playlists);
+        if (hasPlaylistMembershipChanged(before, after)) {
+          const transaction = createPlaylistEditTransaction(
+            "RecordAudio",
+            before,
+            after
+          );
+          await history.record(transaction, transaction.name);
+        }
         return { success: true, message: "Recording stopped" };
+      }
       case CommandType.TOGGLE_METRONOME:
         audioEngine.session.toggleMetronome();
         return { success: true, message: "Metronome toggled" };
@@ -31364,6 +31822,37 @@ var AddBusTrackCommand = class {
   }
 };
 
+// core/src/commands/impl/SetTrackRecordModeCommand.ts
+var SetTrackRecordModeCommand = class {
+  constructor(session, trackId, mode) {
+    this.session = session;
+    this.trackId = trackId;
+    this.mode = mode;
+    this.previousMode = null;
+  }
+  async execute() {
+    const track = this.requireTrack();
+    this.previousMode ??= track.recordMode;
+    track.setRecordMode(this.mode);
+  }
+  async undo() {
+    if (this.previousMode === null) {
+      return;
+    }
+    this.requireTrack().setRecordMode(this.previousMode);
+  }
+  async redo() {
+    this.requireTrack().setRecordMode(this.mode);
+  }
+  requireTrack() {
+    const track = this.session.getTrack(this.trackId);
+    if (!track) {
+      throw new Error(`Track ${this.trackId} not found`);
+    }
+    return track;
+  }
+};
+
 // core/src/commands/handlers/TrackHandler.ts
 var TrackHandler = class {
   constructor() {
@@ -31390,7 +31879,8 @@ var TrackHandler = class {
       CommandType.SET_TRACK_TRIM_GAIN,
       CommandType.SET_TRACK_SOLO_ISOLATE,
       CommandType.SET_TRACK_SOLO_SAFE,
-      CommandType.SET_TRACK_COMMENT
+      CommandType.SET_TRACK_COMMENT,
+      CommandType.SET_TRACK_RECORD_MODE
     ]);
   }
   canHandle(commandType) {
@@ -31656,6 +32146,16 @@ var TrackHandler = class {
         track.comment = comment;
         return { success: true, message: "Track comment updated" };
       }
+      case CommandType.SET_TRACK_RECORD_MODE: {
+        const mode = requireString(payload, "mode");
+        const command = new SetTrackRecordModeCommand(
+          audioEngine.session,
+          requireString(payload, "trackId"),
+          mode
+        );
+        await history.execute(command);
+        return { success: true, message: `Track record mode set to ${mode}` };
+      }
       default:
         throw new Error(`Unsupported command: ${commandType}`);
     }
@@ -31794,140 +32294,68 @@ var RemoveRegionCommand = class {
   }
 };
 
-// core/src/commands/impl/MoveRegionCommand.ts
-var MoveRegionCommand = class {
-  constructor(session, trackId, regionId, newStart, targetTrackId) {
-    this.oldStart = null;
-    this.oldFades = /* @__PURE__ */ new Map();
-    this.targetTrackOldFades = /* @__PURE__ */ new Map();
-    this.rippleApplied = false;
-    this.oldRegionStarts = /* @__PURE__ */ new Map();
-    this.isCrossTrack = false;
-    this.id = crypto.randomUUID();
-    this.session = session;
-    this.trackId = trackId;
-    this.targetTrackId = targetTrackId || trackId;
-    this.regionId = regionId;
-    this.newStart = newStart;
-    this.isCrossTrack = this.targetTrackId !== this.trackId;
-  }
-  async execute() {
-    const sourceTrack = this.session.getTrack(this.trackId);
+// core/src/domain/RegionMoveService.ts
+var RegionMoveService = class {
+  static move(request) {
+    const { session, trackId, regionId, newStart } = request;
+    const targetTrackId = request.targetTrackId ?? trackId;
+    const sourceTrack = session.getTrack(trackId);
     if (!sourceTrack) {
-      throw new Error(`Track ${this.trackId} not found`);
+      throw new Error(`Track ${trackId} not found`);
     }
-    const region = sourceTrack.playlist.getRegion(this.regionId);
+    const targetTrack = session.getTrack(targetTrackId);
+    if (!targetTrack) {
+      throw new Error(`Target track ${targetTrackId} not found`);
+    }
+    const region = sourceTrack.playlist.getRegion(regionId);
     if (!region) {
-      throw new Error(`Region ${this.regionId} not found`);
+      throw new Error(`Region ${regionId} not found`);
     }
-    this.oldStart = region.start;
-    if (this.isCrossTrack) {
-      const targetTrack = this.session.getTrack(this.targetTrackId);
-      if (!targetTrack) {
-        throw new Error(`Target track ${this.targetTrackId} not found`);
+    const oldStart = region.start;
+    const isCrossTrack = targetTrackId !== trackId;
+    sourceTrack.playlist.removeRegion(regionId);
+    if (!isCrossTrack && session.rippleEdit) {
+      const delta = newStart - oldStart;
+      if (delta > 0) {
+        sourceTrack.playlist.rippleShift(newStart, delta);
+      } else if (delta < 0) {
+        sourceTrack.playlist.rippleShift(oldStart + region.length, delta);
       }
-      sourceTrack.playlist.getRegions().forEach((r) => {
-        this.oldFades.set(r.id, { fadeIn: r.fadeIn, fadeOut: r.fadeOut });
-      });
-      targetTrack.playlist.getRegions().forEach((r) => {
-        this.targetTrackOldFades.set(r.id, {
-          fadeIn: r.fadeIn,
-          fadeOut: r.fadeOut
-        });
-      });
-      sourceTrack.playlist.removeRegion(this.regionId);
-      region.move(this.newStart);
-      targetTrack.playlist.addRegion(region);
-      CrossfadeEngine.calculateCrossfades([
-        ...sourceTrack.playlist.getRegions()
-      ]);
+    }
+    region.move(newStart);
+    targetTrack.playlist.addRegion(region);
+    CrossfadeEngine.calculateCrossfades([...sourceTrack.playlist.getRegions()]);
+    if (isCrossTrack) {
       CrossfadeEngine.calculateCrossfades([
         ...targetTrack.playlist.getRegions()
       ]);
-    } else {
-      sourceTrack.playlist.getRegions().forEach((r) => {
-        this.oldRegionStarts.set(r.id, r.start);
-      });
-      sourceTrack.playlist.getRegions().forEach((r) => {
-        this.oldFades.set(r.id, { fadeIn: r.fadeIn, fadeOut: r.fadeOut });
-      });
-      sourceTrack.playlist.removeRegion(this.regionId);
-      if (this.session.rippleEdit) {
-        this.rippleApplied = true;
-        const delta = this.newStart - this.oldStart;
-        if (delta > 0) {
-          sourceTrack.playlist.rippleShift(this.newStart, delta);
-        } else if (delta < 0) {
-          sourceTrack.playlist.rippleShift(
-            this.oldStart + region.length,
-            delta
-          );
-        }
-      }
-      region.move(this.newStart);
-      sourceTrack.playlist.addRegion(region);
-      CrossfadeEngine.calculateCrossfades([
-        ...sourceTrack.playlist.getRegions()
-      ]);
     }
-  }
-  async undo() {
-    if (this.oldStart === null) return;
-    if (this.isCrossTrack) {
-      const targetTrack = this.session.getTrack(this.targetTrackId);
-      const sourceTrack = this.session.getTrack(this.trackId);
-      if (!targetTrack || !sourceTrack) return;
-      const region = targetTrack.playlist.getRegion(this.regionId);
-      if (!region) return;
-      targetTrack.playlist.removeRegion(this.regionId);
-      region.move(this.oldStart);
-      sourceTrack.playlist.addRegion(region);
-      this.oldFades.forEach((fades, id) => {
-        const r = sourceTrack.playlist.getRegion(id);
-        if (r) {
-          r.fadeIn = fades.fadeIn;
-          r.fadeOut = fades.fadeOut;
-        }
-      });
-      this.targetTrackOldFades.forEach((fades, id) => {
-        const r = targetTrack.playlist.getRegion(id);
-        if (r) {
-          r.fadeIn = fades.fadeIn;
-          r.fadeOut = fades.fadeOut;
-        }
-      });
-    } else {
-      const track = this.session.getTrack(this.trackId);
-      if (track) {
-        const region = track.playlist.getRegion(this.regionId);
-        if (region) {
-          if (this.rippleApplied) {
-            track.playlist.getRegions().forEach((r) => {
-              const oldStart = this.oldRegionStarts.get(r.id);
-              if (oldStart !== void 0 && r.id !== this.regionId) {
-                r.move(oldStart);
-                track.playlist.regionChanged.emit(r);
-              }
-            });
-          }
-          track.playlist.removeRegion(this.regionId);
-          region.move(this.oldStart);
-          this.oldFades.forEach((fades, id) => {
-            const r = track.playlist.getRegion(id);
-            if (r) {
-              r.fadeIn = fades.fadeIn;
-              r.fadeOut = fades.fadeOut;
-            }
-          });
-          track.playlist.addRegion(region);
-        }
-      }
-    }
-  }
-  async redo() {
-    await this.execute();
   }
 };
+
+// core/src/commands/history/moveRegionAndCreateTransaction.ts
+function moveRegionAndCreateTransaction(request) {
+  const playlists = resolveAffectedPlaylists(request);
+  const before = capturePlaylistEditState(playlists);
+  RegionMoveService.move(request);
+  const after = capturePlaylistEditState(playlists);
+  return createPlaylistEditTransaction("MoveRegion", before, after);
+}
+function resolveAffectedPlaylists(request) {
+  const sourceTrack = request.session.getTrack(request.trackId);
+  if (!sourceTrack) {
+    throw new Error(`Track ${request.trackId} not found`);
+  }
+  const targetTrackId = request.targetTrackId ?? request.trackId;
+  const targetTrack = request.session.getTrack(targetTrackId);
+  if (!targetTrack) {
+    throw new Error(`Target track ${targetTrackId} not found`);
+  }
+  if (sourceTrack === targetTrack) {
+    return [sourceTrack.playlist];
+  }
+  return [sourceTrack.playlist, targetTrack.playlist];
+}
 
 // core/src/commands/impl/ResizeRegionCommand.ts
 var ResizeRegionCommand = class {
@@ -32775,14 +33203,19 @@ var MergeRegionsCommand = class {
     for (const id of this.regionIds) {
       track.playlist.removeRegion(id);
     }
+    const topRegion = this.oldRegions.reduce((top, region) => {
+      return region.layer > top.layer ? region : top;
+    });
     this.newRegion = new Region(
       crypto.randomUUID(),
       this.newSource.id,
       minStart,
       durationFrames,
       0,
-      "Merged Region"
+      "Merged Region",
+      topRegion.layer
     );
+    this.newRegion.opaque = topRegion.opaque;
     track.playlist.addRegion(this.newRegion);
     const backend = this.audioEngine.backend;
     if (backend && backend.cacheBlob) {
@@ -32961,6 +33394,7 @@ var StripSilenceCommand = class {
       );
       newRegion.gain = region.gain;
       newRegion.muted = region.muted;
+      newRegion.opaque = region.opaque;
       newRegion.playbackRate = region.playbackRate;
       newRegion.stretch = region.stretch;
       newRegion.pitchSemitones = region.pitchSemitones;
@@ -33165,30 +33599,27 @@ var BatchMoveRegionsCommand = class {
   constructor(session, entries) {
     this.session = session;
     this.entries = entries;
-    this.subCommands = [];
+    this.transactions = [];
   }
   async execute() {
-    this.subCommands = this.entries.map(
-      (e) => new MoveRegionCommand(
-        this.session,
-        e.trackId,
-        e.regionId,
-        e.newStart,
-        e.targetTrackId
-      )
+    this.transactions = this.entries.map(
+      (entry) => moveRegionAndCreateTransaction({
+        session: this.session,
+        trackId: entry.trackId,
+        regionId: entry.regionId,
+        newStart: entry.newStart,
+        targetTrackId: entry.targetTrackId
+      })
     );
-    for (const cmd of this.subCommands) {
-      await cmd.execute();
-    }
   }
   async undo() {
-    for (let i = this.subCommands.length - 1; i >= 0; i--) {
-      await this.subCommands[i].undo();
+    for (let i = this.transactions.length - 1; i >= 0; i--) {
+      await this.transactions[i].undo();
     }
   }
   async redo() {
-    for (const cmd of this.subCommands) {
-      await cmd.redo();
+    for (const transaction of this.transactions) {
+      await transaction.redo();
     }
   }
 };
@@ -33297,6 +33728,70 @@ var BatchSetRegionFadesCommand = class {
   }
 };
 
+// core/src/commands/impl/SetRegionLayerCommand.ts
+var SetRegionLayerCommand = class {
+  constructor(session, trackId, regionId, layer) {
+    this.session = session;
+    this.trackId = trackId;
+    this.regionId = regionId;
+    this.layer = layer;
+    this.previousLayer = null;
+  }
+  async execute() {
+    const playlist = this.requirePlaylist();
+    this.previousLayer ??= playlist.getRegion(this.regionId)?.layer ?? null;
+    playlist.setRegionLayer(this.regionId, this.layer);
+  }
+  async undo() {
+    if (this.previousLayer === null) {
+      return;
+    }
+    this.requirePlaylist().setRegionLayer(this.regionId, this.previousLayer);
+  }
+  async redo() {
+    this.requirePlaylist().setRegionLayer(this.regionId, this.layer);
+  }
+  requirePlaylist() {
+    const track = this.session.getTrack(this.trackId);
+    if (!track) {
+      throw new Error(`Track ${this.trackId} not found`);
+    }
+    return track.playlist;
+  }
+};
+
+// core/src/commands/impl/SetRegionOpaqueCommand.ts
+var SetRegionOpaqueCommand = class {
+  constructor(session, trackId, regionId, opaque) {
+    this.session = session;
+    this.trackId = trackId;
+    this.regionId = regionId;
+    this.opaque = opaque;
+    this.previousOpaque = null;
+  }
+  async execute() {
+    const playlist = this.requirePlaylist();
+    this.previousOpaque ??= playlist.getRegion(this.regionId)?.opaque ?? null;
+    playlist.setRegionOpaque(this.regionId, this.opaque);
+  }
+  async undo() {
+    if (this.previousOpaque === null) {
+      return;
+    }
+    this.requirePlaylist().setRegionOpaque(this.regionId, this.previousOpaque);
+  }
+  async redo() {
+    this.requirePlaylist().setRegionOpaque(this.regionId, this.opaque);
+  }
+  requirePlaylist() {
+    const track = this.session.getTrack(this.trackId);
+    if (!track) {
+      throw new Error(`Track ${this.trackId} not found`);
+    }
+    return track.playlist;
+  }
+};
+
 // core/src/commands/handlers/RegionHandler.ts
 var RegionHandler = class {
   constructor() {
@@ -33319,6 +33814,8 @@ var RegionHandler = class {
       CommandType.TRIM_REGION_TO_RANGE,
       CommandType.TRIM_TO_ADJACENT_REGION,
       CommandType.SET_REGION_FADES,
+      CommandType.SET_REGION_LAYER,
+      CommandType.SET_REGION_OPAQUE,
       CommandType.MERGE_REGIONS,
       CommandType.SELECT_REGIONS,
       CommandType.LOCK_REGION,
@@ -33431,22 +33928,22 @@ var RegionHandler = class {
                 });
               }
             }
-            const cmd2 = new BatchMoveRegionsCommand(session, entries);
-            await history.execute(cmd2);
+            const cmd = new BatchMoveRegionsCommand(session, entries);
+            await history.execute(cmd);
             return {
               success: true,
               message: `${entries.length} regions moved`
             };
           }
         }
-        const cmd = new MoveRegionCommand(
+        const transaction = moveRegionAndCreateTransaction({
           session,
-          requireString(payload, "trackId"),
-          primaryRegionId,
+          trackId: requireString(payload, "trackId"),
+          regionId: primaryRegionId,
           newStart,
-          optionalString(payload, "targetTrackId")
-        );
-        await history.execute(cmd);
+          targetTrackId: optionalString(payload, "targetTrackId")
+        });
+        await history.record(transaction, transaction.name);
         return { success: true, message: `Region moved to ${newStart}` };
       }
       case CommandType.RESIZE_REGION: {
@@ -33563,6 +34060,26 @@ var RegionHandler = class {
         );
         await history.execute(cmd);
         return { success: true, message: `Region fades updated` };
+      }
+      case CommandType.SET_REGION_LAYER: {
+        const command = new SetRegionLayerCommand(
+          audioEngine.session,
+          requireString(payload, "trackId"),
+          requireString(payload, "regionId"),
+          requireNumber(payload, "layer")
+        );
+        await history.execute(command);
+        return { success: true, message: "Region layer updated" };
+      }
+      case CommandType.SET_REGION_OPAQUE: {
+        const command = new SetRegionOpaqueCommand(
+          audioEngine.session,
+          requireString(payload, "trackId"),
+          requireString(payload, "regionId"),
+          requireBoolean(payload, "opaque")
+        );
+        await history.execute(command);
+        return { success: true, message: "Region opacity updated" };
       }
       case CommandType.MERGE_REGIONS: {
         let regionIds = payload.regionIds ?? [];
@@ -36501,6 +37018,9 @@ var LoadSessionCommand = class {
       track.armed = trackData.armed;
       track.mute = trackData.mute;
       track.solo = trackData.solo;
+      if (trackData.recordMode !== void 0) {
+        track.setRecordMode(trackData.recordMode);
+      }
       for (const regionData of trackData.regions) {
         const { Region: Region2 } = await Promise.resolve().then(() => (init_Region(), Region_exports));
         const region = new Region2(
@@ -36514,6 +37034,7 @@ var LoadSessionCommand = class {
         );
         region.gain = regionData.gain;
         region.muted = regionData.muted;
+        region.opaque = regionData.opaque ?? true;
         region.fadeIn = regionData.fadeIn;
         region.fadeOut = regionData.fadeOut;
         region.playbackRate = regionData.playbackRate;
@@ -36906,6 +37427,9 @@ var NewSessionCommand = class {
       track.mute = trackData.mute;
       track.solo = trackData.solo;
       if (trackData.color) track.color = trackData.color;
+      if (trackData.recordMode !== void 0) {
+        track.setRecordMode(trackData.recordMode);
+      }
       for (const regionData of trackData.regions) {
         const { Region: Region2 } = await Promise.resolve().then(() => (init_Region(), Region_exports));
         const region = new Region2(
@@ -36919,6 +37443,7 @@ var NewSessionCommand = class {
         );
         region.gain = regionData.gain;
         region.muted = regionData.muted;
+        region.opaque = regionData.opaque ?? true;
         region.fadeIn = regionData.fadeIn;
         region.fadeOut = regionData.fadeOut;
         region.playbackRate = regionData.playbackRate;
@@ -38747,7 +39272,7 @@ var CommandExecutor = class _CommandExecutor {
    * 3. 적절한 Handler 찾기
    * 4. Handler에게 위임
    */
-  async execute(commandJson) {
+  async execute(commandJson, history = this._history) {
     try {
       const command = AudioCommandSchema.parse(commandJson);
       await this.audioEngine.initialize();
@@ -38763,7 +39288,7 @@ var CommandExecutor = class _CommandExecutor {
         command.type,
         payload,
         this.audioEngine,
-        this._history
+        history
       );
       if (result.success) {
         this.commandExecuted.emit({ type: command.type, payload });
@@ -40609,8 +41134,10 @@ export {
   TransportFSM,
   TriggerBox,
   TriggerState,
+  UndoTransaction,
   VCATrack,
   ZoomFocus,
   computeFadeGain,
-  formatClock
+  formatClock,
+  moveRegionAndCreateTransaction
 };
