@@ -169,6 +169,7 @@ export class AudioEngine {
       gain: r.gain,
       muted: r.muted,
       layer: r.layer,
+      opaque: r.opaque,
       fadeIn: r.fadeIn,
       fadeOut: r.fadeOut,
       playbackRate: r.playbackRate,
@@ -1216,7 +1217,7 @@ export class AudioEngine {
             0,
             "Recording",
           );
-          track.playlist.addRegion(region);
+          track.playlist.insertRecordedRegion(region, track.recordMode);
           logger.debug(
             "AudioEngine",
             `Created Region: ${url}, Start: ${startFrame}, Dur: ${durationFrames}`,

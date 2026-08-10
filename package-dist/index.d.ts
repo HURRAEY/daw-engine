@@ -1027,6 +1027,7 @@ export declare class Region {
 	gain: number;
 	muted: boolean;
 	layer: number;
+	opaque: boolean;
 	fadeIn: FrameCount;
 	fadeOut: FrameCount;
 	fadeInShape: FadeShape;
@@ -1348,6 +1349,17 @@ declare class Crossfade {
 		inRegionId: RegionId;
 	} | null;
 }
+/**
+ * Record Mode
+ */
+export declare enum RecordMode {
+	/** 기존 리전을 유지하고 새 리전을 투명 Layer로 추가합니다. */
+	SOUND_ON_SOUND = "sound_on_sound",
+	/** 새 리전과 겹치는 기존 리전을 자르거나 Playlist에서 제거합니다. */
+	NON_LAYERED = "non_layered",
+	/** 기존 리전을 유지하고 새 리전을 불투명 최상위 Layer로 추가합니다. */
+	LAYERED = "layered"
+}
 export declare class Playlist {
 	readonly id: string;
 	name: string;
@@ -1369,12 +1381,23 @@ export declare class Playlist {
 	removeRegion(regionId: RegionId): void;
 	getRegions(): ReadonlyArray<Region>;
 	getRegion(regionId: RegionId): Region | undefined;
+	getTopLayer(): number;
+	setRegionLayer(regionId: RegionId, layer: number): void;
+	setRegionOpaque(regionId: RegionId, opaque: boolean): void;
+	insertRecordedRegion(region: Region, mode: RecordMode): void;
 	getRegionsInRange(start: FrameCount, end: FrameCount): Region[];
 	/**
 	 * Shift all regions whose start >= afterFrame by deltaFrames.
 	 * Used for ripple editing.
 	 */
 	rippleShift(afterFrame: FrameCount, deltaFrames: number): void;
+	notifyRegionChanged(region: Region): void;
+	private replaceOverlappingRegions;
+	private replaceOverlap;
+	private trimExistingRegionEnd;
+	private trimExistingRegionStart;
+	private splitAroundRecordedRegion;
+	private createRightSegment;
 	private sortRegions;
 	addMidiRegion(region: MidiRegion): void;
 	removeMidiRegion(regionId: RegionId): void;
@@ -1525,14 +1548,8 @@ export interface BounceConfig {
 	includeAutomation: boolean;
 }
 /**
- * Track mode determines recording and playback behavior.
- *
- * - 'normal': standard layered playback (default) -- all overlapping regions
- *   play simultaneously, respecting layer ordering.
- * - 'non_layered': only the top-most region at any given time position is
- *   audible; lower layers are silenced.
- * - 'tape': destructive recording mode -- new audio physically replaces
- *   existing audio in the source file rather than creating new regions.
+ * @deprecated 녹음 겹침 정책은 RecordMode를 사용합니다.
+ * 이 값은 호환성을 위해 유지되며 현재 Playlist 편집과 재생에는 사용되지 않습니다.
  */
 export type TrackMode = "normal" | "non_layered" | "tape";
 export declare class Track {
@@ -1558,6 +1575,7 @@ export declare class Track {
 	isCollapsed: boolean;
 	private _alignStyle;
 	private _trackMode;
+	private _recordMode;
 	private _bounceProgress;
 	readonly armChanged: Signal<boolean>;
 	readonly monitorChanged: Signal<boolean>;
@@ -1571,6 +1589,7 @@ export declare class Track {
 	readonly frozenChanged: Signal<boolean>;
 	readonly alignStyleChanged: Signal<string>;
 	readonly trackModeChanged: Signal<string>;
+	readonly recordModeChanged: Signal<RecordMode>;
 	readonly bounceProgressChanged: Signal<number>;
 	readonly bounceCompleted: Signal<{
 		sourceId: string;
@@ -1653,6 +1672,8 @@ export declare class Track {
 	 * - 'tape': destructive recording, new audio replaces old
 	 */
 	setTrackMode(mode: TrackMode): void;
+	get recordMode(): RecordMode;
+	setRecordMode(mode: RecordMode): void;
 }
 /**
  * Video metadata attached to audio sources that originated from video files.
@@ -3019,6 +3040,7 @@ export interface RegionSnapshot {
 	gain: number;
 	muted: boolean;
 	layer: number;
+	opaque?: boolean;
 	fadeIn: number;
 	fadeOut: number;
 	playbackRate: number;
@@ -3038,6 +3060,7 @@ export interface TrackSnapshot {
 	monitorMode?: string;
 	trimGain?: number;
 	comment?: string;
+	recordMode?: RecordMode;
 	regions: RegionSnapshot[];
 	midiRegions?: MidiRegionSnapshot[];
 }
@@ -3199,17 +3222,6 @@ export declare enum ClockMode {
  * Format frame count based on clock mode
  */
 export declare function formatClock(frame: number, sampleRate: number, mode: ClockMode, bpm?: number, timeSigNum?: number): string;
-/**
- * Record Mode
- */
-export declare enum RecordMode {
-	/** 기존 위에 레이어 추가 */
-	SOUND_ON_SOUND = "sound_on_sound",
-	/** 기존 삭제 후 대체 */
-	NON_LAYERED = "non_layered",
-	/** 별도 레이어에 기록 */
-	LAYERED = "layered"
-}
 /**
  * Region Clipboard Data
  *
@@ -3477,6 +3489,8 @@ export interface RegionDTO {
 	gain: number;
 	muted: boolean;
 	layer: number;
+	/** false면 아래 Layer와 함께 재생합니다. 생략하면 true로 처리합니다. */
+	opaque?: boolean;
 	fadeIn: FrameCount;
 	fadeOut: FrameCount;
 	playbackRate: number;
@@ -4766,12 +4780,14 @@ export declare class ExportPresetManager {
 export interface Command {
 	execute(): Promise<void>;
 }
-export interface UndoableCommand extends Command {
+export interface ReversibleChange {
 	undo(): Promise<void>;
 	redo(): Promise<void>;
 }
+export interface UndoableCommand extends Command, ReversibleChange {
+}
 export interface HistoryEntry {
-	command: UndoableCommand;
+	command: ReversibleChange;
 	label: string;
 	timestamp: number;
 }
@@ -4815,6 +4831,7 @@ export declare class CommandHistory {
 	private undoStack;
 	private redoStack;
 	private _depth;
+	private operationTail;
 	private _activeTransaction;
 	readonly historyChanged: Signal<void>;
 	readonly beginUndoRedo: Signal<void>;
@@ -4825,6 +4842,13 @@ export declare class CommandHistory {
 	get redoDepth(): number;
 	private trimUndoStack;
 	execute(command: UndoableCommand, label?: string): Promise<void>;
+	/**
+	 * 도메인 서비스가 이미 적용한 변경을 실행 없이 기록합니다.
+	 * 기능 실행과 History 저장을 분리할 때 사용합니다.
+	 */
+	record(command: ReversibleChange, label?: string): Promise<void>;
+	private store;
+	private enqueueOperation;
 	beginTransaction(name: string): void;
 	addCommandToTransaction(cmd: UndoableCommand): void;
 	commitTransaction(): Promise<void>;
@@ -4832,6 +4856,8 @@ export declare class CommandHistory {
 	get hasActiveTransaction(): boolean;
 	undo(): Promise<void>;
 	redo(): Promise<void>;
+	private undoOne;
+	private redoOne;
 	/**
 	 * Undo multiple transactions at once.
 	 *
@@ -4979,6 +5005,8 @@ export declare const CommandType: {
 	readonly TRIM_REGION_TO_RANGE: "TRIM_REGION_TO_RANGE";
 	readonly TRIM_TO_ADJACENT_REGION: "TRIM_TO_ADJACENT_REGION";
 	readonly SET_REGION_FADES: "SET_REGION_FADES";
+	readonly SET_REGION_LAYER: "SET_REGION_LAYER";
+	readonly SET_REGION_OPAQUE: "SET_REGION_OPAQUE";
 	readonly MERGE_REGIONS: "MERGE_REGIONS";
 	readonly SELECT_REGIONS: "SELECT_REGIONS";
 	readonly ADD_SEND_BUS: "ADD_SEND_BUS";
@@ -5056,6 +5084,7 @@ export declare const CommandType: {
 	readonly SET_TRACK_SOLO_ISOLATE: "SET_TRACK_SOLO_ISOLATE";
 	readonly SET_TRACK_SOLO_SAFE: "SET_TRACK_SOLO_SAFE";
 	readonly SET_TRACK_COMMENT: "SET_TRACK_COMMENT";
+	readonly SET_TRACK_RECORD_MODE: "SET_TRACK_RECORD_MODE";
 	readonly SET_TRACK_PAN_WIDTH: "SET_TRACK_PAN_WIDTH";
 	readonly SET_AUTOMATION_MODE: "SET_AUTOMATION_MODE";
 	readonly RENAME_MIXER_SCENE: "RENAME_MIXER_SCENE";
@@ -5264,6 +5293,22 @@ declare const AudioCommandSchema: z.ZodDiscriminatedUnion<[
 			regionId: z.ZodString;
 			fadeIn: z.ZodOptional<z.ZodNumber>;
 			fadeOut: z.ZodOptional<z.ZodNumber>;
+		}, z.core.$strip>;
+	}, z.core.$strip>,
+	z.ZodObject<{
+		type: z.ZodLiteral<"SET_REGION_LAYER">;
+		payload: z.ZodObject<{
+			trackId: z.ZodString;
+			regionId: z.ZodString;
+			layer: z.ZodNumber;
+		}, z.core.$strip>;
+	}, z.core.$strip>,
+	z.ZodObject<{
+		type: z.ZodLiteral<"SET_REGION_OPAQUE">;
+		payload: z.ZodObject<{
+			trackId: z.ZodString;
+			regionId: z.ZodString;
+			opaque: z.ZodBoolean;
 		}, z.core.$strip>;
 	}, z.core.$strip>,
 	z.ZodObject<{
@@ -6084,6 +6129,17 @@ declare const AudioCommandSchema: z.ZodDiscriminatedUnion<[
 		}, z.core.$strip>;
 	}, z.core.$strip>,
 	z.ZodObject<{
+		type: z.ZodLiteral<"SET_TRACK_RECORD_MODE">;
+		payload: z.ZodObject<{
+			trackId: z.ZodString;
+			mode: z.ZodEnum<{
+				sound_on_sound: "sound_on_sound";
+				non_layered: "non_layered";
+				layered: "layered";
+			}>;
+		}, z.core.$strip>;
+	}, z.core.$strip>,
+	z.ZodObject<{
 		type: z.ZodLiteral<"SET_TRACK_TRIM_GAIN">;
 		payload: z.ZodObject<{
 			trackId: z.ZodString;
@@ -6245,8 +6301,66 @@ export declare class CommandExecutor {
 	 * 3. 적절한 Handler 찾기
 	 * 4. Handler에게 위임
 	 */
-	execute(commandJson: unknown): Promise<CommandResult>;
+	execute(commandJson: unknown, history?: CommandHistory): Promise<CommandResult>;
 }
+/**
+ * Optional cleanup callback type.
+ *
+ * A cleanup function is invoked when the command it is associated with is
+ * removed or invalidated — for example via {@link UndoTransaction.removeCommand}.
+ * This allows callers to release external resources (e.g. cached buffers,
+ * temporary files) that were tied to the command's lifecycle.
+ */
+export type CommandCleanup = () => void;
+/**
+ * UndoTransaction groups multiple commands into one atomic undo step.
+ *
+ * On undo, commands are reversed in reverse order.
+ * On redo, commands are re-executed in forward order.
+ *
+ * - Optional `cleanup` callback per command, called when a command is
+ *   removed or the transaction is cleared.
+ * - {@link removeCommand} for invalidating individual commands mid-transaction.
+ */
+export declare class UndoTransaction implements UndoableCommand {
+	private entries;
+	private _name;
+	private _timestamp;
+	constructor(name: string);
+	get name(): string;
+	get timestamp(): number;
+	get empty(): boolean;
+	get size(): number;
+	/**
+	 * Append a command to this transaction.
+	 *
+	 * @param cmd     - The undoable command to add.
+	 * @param cleanup - Optional callback invoked when the command is removed
+	 *                  or invalidated (e.g. via {@link removeCommand}).
+	 */
+	addCommand(cmd: UndoableCommand, cleanup?: CommandCleanup): void;
+	/**
+	 * Remove (invalidate) the command at the given index.
+	 *
+	 * If the entry has a cleanup callback it will be invoked before the
+	 * entry is removed.
+	 *
+	 * @param index - Zero-based index of the command to remove.
+	 * @throws {RangeError} If the index is out of bounds.
+	 */
+	removeCommand(index: number): void;
+	execute(): Promise<void>;
+	undo(): Promise<void>;
+	redo(): Promise<void>;
+}
+export interface RegionMoveRequest {
+	session: Session;
+	trackId: TrackId;
+	regionId: RegionId;
+	newStart: FrameCount;
+	targetTrackId?: TrackId;
+}
+export declare function moveRegionAndCreateTransaction(request: RegionMoveRequest): UndoTransaction;
 /**
  * Coefficients for a single cubic spline segment.
  * The polynomial is: y = a + b*x + c*x^2 + d*x^3

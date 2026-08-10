@@ -262,6 +262,8 @@ export interface RegionDTO {
 	gain: number;
 	muted: boolean;
 	layer: number;
+	/** false면 아래 Layer와 함께 재생합니다. 생략하면 true로 처리합니다. */
+	opaque?: boolean;
 	fadeIn: FrameCount;
 	fadeOut: FrameCount;
 	playbackRate: number;
@@ -1284,6 +1286,7 @@ export declare class Region {
 	gain: number;
 	muted: boolean;
 	layer: number;
+	opaque: boolean;
 	fadeIn: FrameCount;
 	fadeOut: FrameCount;
 	fadeInShape: FadeShape;
@@ -1605,6 +1608,14 @@ declare class Crossfade {
 		inRegionId: RegionId;
 	} | null;
 }
+declare enum RecordMode {
+	/** 기존 리전을 유지하고 새 리전을 투명 Layer로 추가합니다. */
+	SOUND_ON_SOUND = "sound_on_sound",
+	/** 새 리전과 겹치는 기존 리전을 자르거나 Playlist에서 제거합니다. */
+	NON_LAYERED = "non_layered",
+	/** 기존 리전을 유지하고 새 리전을 불투명 최상위 Layer로 추가합니다. */
+	LAYERED = "layered"
+}
 declare class Playlist {
 	readonly id: string;
 	name: string;
@@ -1626,12 +1637,23 @@ declare class Playlist {
 	removeRegion(regionId: RegionId): void;
 	getRegions(): ReadonlyArray<Region>;
 	getRegion(regionId: RegionId): Region | undefined;
+	getTopLayer(): number;
+	setRegionLayer(regionId: RegionId, layer: number): void;
+	setRegionOpaque(regionId: RegionId, opaque: boolean): void;
+	insertRecordedRegion(region: Region, mode: RecordMode): void;
 	getRegionsInRange(start: FrameCount, end: FrameCount): Region[];
 	/**
 	 * Shift all regions whose start >= afterFrame by deltaFrames.
 	 * Used for ripple editing.
 	 */
 	rippleShift(afterFrame: FrameCount, deltaFrames: number): void;
+	notifyRegionChanged(region: Region): void;
+	private replaceOverlappingRegions;
+	private replaceOverlap;
+	private trimExistingRegionEnd;
+	private trimExistingRegionStart;
+	private splitAroundRecordedRegion;
+	private createRightSegment;
 	private sortRegions;
 	addMidiRegion(region: MidiRegion): void;
 	removeMidiRegion(regionId: RegionId): void;
@@ -1779,14 +1801,8 @@ export interface BounceConfig {
 	includeAutomation: boolean;
 }
 /**
- * Track mode determines recording and playback behavior.
- *
- * - 'normal': standard layered playback (default) -- all overlapping regions
- *   play simultaneously, respecting layer ordering.
- * - 'non_layered': only the top-most region at any given time position is
- *   audible; lower layers are silenced.
- * - 'tape': destructive recording mode -- new audio physically replaces
- *   existing audio in the source file rather than creating new regions.
+ * @deprecated 녹음 겹침 정책은 RecordMode를 사용합니다.
+ * 이 값은 호환성을 위해 유지되며 현재 Playlist 편집과 재생에는 사용되지 않습니다.
  */
 export type TrackMode = "normal" | "non_layered" | "tape";
 declare class Track {
@@ -1812,6 +1828,7 @@ declare class Track {
 	isCollapsed: boolean;
 	private _alignStyle;
 	private _trackMode;
+	private _recordMode;
 	private _bounceProgress;
 	readonly armChanged: Signal<boolean>;
 	readonly monitorChanged: Signal<boolean>;
@@ -1825,6 +1842,7 @@ declare class Track {
 	readonly frozenChanged: Signal<boolean>;
 	readonly alignStyleChanged: Signal<string>;
 	readonly trackModeChanged: Signal<string>;
+	readonly recordModeChanged: Signal<RecordMode>;
 	readonly bounceProgressChanged: Signal<number>;
 	readonly bounceCompleted: Signal<{
 		sourceId: string;
@@ -1907,6 +1925,8 @@ declare class Track {
 	 * - 'tape': destructive recording, new audio replaces old
 	 */
 	setTrackMode(mode: TrackMode): void;
+	get recordMode(): RecordMode;
+	setRecordMode(mode: RecordMode): void;
 }
 declare class Range$1 {
 	readonly id: RangeId;
@@ -3013,6 +3033,7 @@ export interface RegionSnapshot {
 	gain: number;
 	muted: boolean;
 	layer: number;
+	opaque?: boolean;
 	fadeIn: number;
 	fadeOut: number;
 	playbackRate: number;
@@ -3032,6 +3053,7 @@ export interface TrackSnapshot {
 	monitorMode?: string;
 	trimGain?: number;
 	comment?: string;
+	recordMode?: RecordMode;
 	regions: RegionSnapshot[];
 	midiRegions?: MidiRegionSnapshot[];
 }

@@ -64,6 +64,8 @@ export const CommandType = {
   TRIM_REGION_TO_RANGE: "TRIM_REGION_TO_RANGE",
   TRIM_TO_ADJACENT_REGION: "TRIM_TO_ADJACENT_REGION",
   SET_REGION_FADES: "SET_REGION_FADES",
+  SET_REGION_LAYER: "SET_REGION_LAYER",
+  SET_REGION_OPAQUE: "SET_REGION_OPAQUE",
   MERGE_REGIONS: "MERGE_REGIONS",
   SELECT_REGIONS: "SELECT_REGIONS",
 
@@ -191,6 +193,7 @@ export const CommandType = {
   SET_TRACK_SOLO_ISOLATE: "SET_TRACK_SOLO_ISOLATE",
   SET_TRACK_SOLO_SAFE: "SET_TRACK_SOLO_SAFE",
   SET_TRACK_COMMENT: "SET_TRACK_COMMENT",
+  SET_TRACK_RECORD_MODE: "SET_TRACK_RECORD_MODE",
 
   // Phase 15: Additional
   SET_TRACK_PAN_WIDTH: "SET_TRACK_PAN_WIDTH",
@@ -371,6 +374,24 @@ export const SetRegionFadesCommandSchema = z.object({
     regionId: z.string(),
     fadeIn: z.number().optional(),
     fadeOut: z.number().optional(),
+  }),
+});
+
+export const SetRegionLayerCommandSchema = z.object({
+  type: z.literal(CommandType.SET_REGION_LAYER),
+  payload: z.object({
+    trackId: z.string(),
+    regionId: z.string(),
+    layer: z.number().int().nonnegative(),
+  }),
+});
+
+export const SetRegionOpaqueCommandSchema = z.object({
+  type: z.literal(CommandType.SET_REGION_OPAQUE),
+  payload: z.object({
+    trackId: z.string(),
+    regionId: z.string(),
+    opaque: z.boolean(),
   }),
 });
 
@@ -969,6 +990,14 @@ export const SetTrackMonitorModeCommandSchema = z.object({
   }),
 });
 
+export const SetTrackRecordModeCommandSchema = z.object({
+  type: z.literal(CommandType.SET_TRACK_RECORD_MODE),
+  payload: z.object({
+    trackId: z.string(),
+    mode: z.enum(["sound_on_sound", "non_layered", "layered"]),
+  }),
+});
+
 export const SetTrackTrimGainCommandSchema = z.object({
   type: z.literal(CommandType.SET_TRACK_TRIM_GAIN),
   payload: z.object({
@@ -1178,6 +1207,8 @@ export const AudioCommandSchema = z.discriminatedUnion("type", [
   ResizeRegionCommandSchema,
   TrimRegionCommandSchema,
   SetRegionFadesCommandSchema,
+  SetRegionLayerCommandSchema,
+  SetRegionOpaqueCommandSchema,
   MergeRegionsCommandSchema,
   z.object({
     type: z.literal(CommandType.SET_TEMPO),
@@ -1520,6 +1551,7 @@ export const AudioCommandSchema = z.discriminatedUnion("type", [
   RenameMarkerCommandSchema,
   SetMarkerLockedCommandSchema,
   SetTrackMonitorModeCommandSchema,
+  SetTrackRecordModeCommandSchema,
   SetTrackTrimGainCommandSchema,
   SetTrackSoloIsolateCommandSchema,
   SetTrackSoloSafeCommandSchema,

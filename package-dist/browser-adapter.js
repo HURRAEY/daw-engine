@@ -1464,6 +1464,7 @@ var Region = class _Region {
     this.gain = 1;
     this.muted = false;
     this.layer = 0;
+    this.opaque = true;
     this.fadeIn = 0;
     this.fadeOut = 0;
     this.fadeInShape = 1 /* EQUAL_POWER */;
@@ -2142,6 +2143,36 @@ var Playlist = class {
   getRegion(regionId) {
     return this.regions.find((r) => r.id === regionId);
   }
+  getTopLayer() {
+    if (this.regions.length === 0) {
+      return -1;
+    }
+    return Math.max(...this.regions.map((region) => region.layer));
+  }
+  setRegionLayer(regionId, layer) {
+    const region = this.getRegion(regionId);
+    if (!region) {
+      throw new Error(`Region ${regionId} not found`);
+    }
+    region.layer = Math.max(0, Math.trunc(layer));
+    this.notifyRegionChanged(region);
+  }
+  setRegionOpaque(regionId, opaque) {
+    const region = this.getRegion(regionId);
+    if (!region) {
+      throw new Error(`Region ${regionId} not found`);
+    }
+    region.opaque = opaque;
+    this.notifyRegionChanged(region);
+  }
+  insertRecordedRegion(region, mode) {
+    region.layer = this.getTopLayer() + 1;
+    region.opaque = mode !== "sound_on_sound" /* SOUND_ON_SOUND */;
+    if (mode === "non_layered" /* NON_LAYERED */) {
+      this.replaceOverlappingRegions(region);
+    }
+    this.addRegion(region);
+  }
   getRegionsInRange(start, end) {
     return this.regions.filter((r) => r.end > start && r.start < end);
   }
@@ -2158,6 +2189,85 @@ var Playlist = class {
       }
     }
     this.sortRegions();
+  }
+  notifyRegionChanged(region) {
+    this.sortRegions();
+    this.updateCrossfadesForRegion(region.id);
+    this._thawList.queueEmission(this.regionChanged, region);
+  }
+  replaceOverlappingRegions(recordedRegion) {
+    const overlappingRegions = [...this.getOverlappingRegions(recordedRegion)];
+    for (const existingRegion of overlappingRegions) {
+      this.replaceOverlap(existingRegion, recordedRegion);
+    }
+  }
+  replaceOverlap(existingRegion, recordedRegion) {
+    const existingEnd = existingRegion.end;
+    const coversExisting = recordedRegion.start <= existingRegion.start && recordedRegion.end >= existingEnd;
+    if (coversExisting) {
+      this.removeRegion(existingRegion.id);
+      return;
+    }
+    const splitsExisting = existingRegion.start < recordedRegion.start && existingEnd > recordedRegion.end;
+    if (splitsExisting) {
+      this.splitAroundRecordedRegion(existingRegion, recordedRegion);
+      return;
+    }
+    if (existingRegion.start < recordedRegion.start) {
+      this.trimExistingRegionEnd(existingRegion, recordedRegion.start);
+      return;
+    }
+    this.trimExistingRegionStart(existingRegion, recordedRegion.end);
+  }
+  trimExistingRegionEnd(region, end) {
+    region.length = end - region.start;
+    region.fadeOut = 0;
+    region.transients = region.transients.filter((position) => {
+      return position < region.length;
+    });
+    this.notifyRegionChanged(region);
+  }
+  trimExistingRegionStart(region, start) {
+    const trimLength = start - region.start;
+    const oldEnd = region.end;
+    region.start = start;
+    region.sourceStart += trimLength;
+    region.length = oldEnd - start;
+    region.fadeIn = 0;
+    region.transients = region.transients.map((position) => position - trimLength).filter((position) => position >= 0 && position < region.length);
+    this.notifyRegionChanged(region);
+  }
+  splitAroundRecordedRegion(region, recordedRegion) {
+    const rightRegion = this.createRightSegment(region, recordedRegion.end);
+    this.trimExistingRegionEnd(region, recordedRegion.start);
+    this.addRegion(rightRegion);
+  }
+  createRightSegment(region, start) {
+    const timelineOffset = start - region.start;
+    const rightRegion = new Region(
+      crypto.randomUUID(),
+      region.sourceId,
+      start,
+      region.end - start,
+      region.sourceStart + timelineOffset,
+      `${region.name}-R`,
+      region.layer
+    );
+    rightRegion.gain = region.gain;
+    rightRegion.muted = region.muted;
+    rightRegion.opaque = region.opaque;
+    rightRegion.fadeIn = 0;
+    rightRegion.fadeOut = region.fadeOut;
+    rightRegion.fadeInShape = region.fadeInShape;
+    rightRegion.fadeOutShape = region.fadeOutShape;
+    rightRegion.playbackRate = region.playbackRate;
+    rightRegion.stretch = region.stretch;
+    rightRegion.pitchSemitones = region.pitchSemitones;
+    rightRegion.syncPosition = region.syncPosition;
+    rightRegion.transients = region.transients.filter((position) => position >= timelineOffset).map((position) => position - timelineOffset);
+    rightRegion.locked = region.locked;
+    rightRegion.timeDomain = region.timeDomain;
+    return rightRegion;
   }
   sortRegions() {
     this.regions.sort((a, b) => a.start - b.start);
@@ -2277,7 +2387,7 @@ var Playlist = class {
     }
     for (const r of this.regions) {
       if (r.id === regionId) continue;
-      if (!r.muted && r.covers(frame) && r.layer > region.layer) {
+      if (!r.muted && r.opaque && r.covers(frame) && r.layer > region.layer) {
         return false;
       }
     }
@@ -2400,12 +2510,21 @@ var Playlist = class {
         this.removeCrossfade(xfade.id);
         continue;
       }
+      if (otherRegion.layer !== region.layer) {
+        this.removeCrossfade(xfade.id);
+        continue;
+      }
       const overlap = Crossfade.calculateOverlap(region, otherRegion);
       if (!overlap) {
         this.removeCrossfade(xfade.id);
       } else {
         xfade.setPosition(overlap.position);
         xfade.setLength(overlap.length);
+      }
+    }
+    for (const otherRegion of this.getOverlappingRegions(region)) {
+      if (otherRegion.layer === region.layer) {
+        this.autoCreateCrossfade(region, otherRegion);
       }
     }
   }
@@ -2449,6 +2568,7 @@ var Playlist = class {
       );
       rightRegion.gain = region.gain;
       rightRegion.muted = region.muted;
+      rightRegion.opaque = region.opaque;
       rightRegion.fadeOut = region.fadeOut;
       rightRegion.fadeOutShape = region.fadeOutShape;
       region.fadeOut = 0;
@@ -2475,6 +2595,7 @@ var Playlist = class {
     );
     newRegion.gain = source.gain;
     newRegion.muted = source.muted;
+    newRegion.opaque = source.opaque;
     newRegion.fadeIn = source.fadeIn;
     newRegion.fadeOut = source.fadeOut;
     newRegion.fadeInShape = source.fadeInShape;
@@ -2556,6 +2677,7 @@ var Track = class {
     this._alignStyle = "existing_material";
     // Track mode
     this._trackMode = "normal";
+    this._recordMode = "layered" /* LAYERED */;
     // Enhanced bounce/freeze state
     this._bounceProgress = 0;
     // Signals
@@ -2571,6 +2693,7 @@ var Track = class {
     this.frozenChanged = new Signal();
     this.alignStyleChanged = new Signal();
     this.trackModeChanged = new Signal();
+    this.recordModeChanged = new Signal();
     this.bounceProgressChanged = new Signal();
     this.bounceCompleted = new Signal();
     this.id = id;
@@ -2769,6 +2892,16 @@ var Track = class {
       this._trackMode = mode;
       this.trackModeChanged.emit(mode);
     }
+  }
+  get recordMode() {
+    return this._recordMode;
+  }
+  setRecordMode(mode) {
+    if (this._recordMode === mode) {
+      return;
+    }
+    this._recordMode = mode;
+    this.recordModeChanged.emit(mode);
   }
 };
 
@@ -6463,6 +6596,7 @@ var Session = class _Session {
         monitorMode: t.monitorMode,
         trimGain: t.trimGain,
         comment: t.comment,
+        recordMode: t.recordMode,
         regions: t.playlist.getRegions().map((r) => ({
           id: r.id,
           sourceId: r.sourceId,
@@ -6473,6 +6607,7 @@ var Session = class _Session {
           gain: r.gain,
           muted: r.muted,
           layer: r.layer,
+          opaque: r.opaque,
           fadeIn: r.fadeIn,
           fadeOut: r.fadeOut,
           playbackRate: r.playbackRate,
@@ -6566,6 +6701,9 @@ var Session = class _Session {
       if (trackData.trimGain !== void 0)
         track.setTrimGain(trackData.trimGain);
       if (trackData.comment !== void 0) track.comment = trackData.comment;
+      if (trackData.recordMode !== void 0) {
+        track.setRecordMode(trackData.recordMode);
+      }
       for (const regionData of trackData.regions) {
         const region = new Region(
           regionData.id,
@@ -6578,6 +6716,7 @@ var Session = class _Session {
         );
         region.gain = regionData.gain;
         region.muted = regionData.muted;
+        region.opaque = regionData.opaque ?? true;
         region.fadeIn = regionData.fadeIn;
         region.fadeOut = regionData.fadeOut;
         region.playbackRate = regionData.playbackRate;
@@ -7242,6 +7381,7 @@ var AudioEngine = class _AudioEngine {
       gain: r.gain,
       muted: r.muted,
       layer: r.layer,
+      opaque: r.opaque,
       fadeIn: r.fadeIn,
       fadeOut: r.fadeOut,
       playbackRate: r.playbackRate,
@@ -8076,7 +8216,7 @@ var AudioEngine = class _AudioEngine {
             0,
             "Recording"
           );
-          track.playlist.addRegion(region);
+          track.playlist.insertRecordedRegion(region, track.recordMode);
           logger.debug(
             "AudioEngine",
             `Created Region: ${url}, Start: ${startFrame}, Dur: ${durationFrames}`
