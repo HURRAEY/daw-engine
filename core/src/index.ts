@@ -1,3 +1,7 @@
+// 선언 번들 생성기가 lamejs ambient module을 찾도록 entry에서 타입 선언을 직접 참조합니다.
+// eslint-disable-next-line @typescript-eslint/triple-slash-reference
+/// <reference path="./lamejs.d.ts" />
+
 // ─── Domain ─────────────────────────────────────────────────────────────────
 export { Session } from "./domain/Session";
 export { Track, TrackType } from "./domain/Track";
