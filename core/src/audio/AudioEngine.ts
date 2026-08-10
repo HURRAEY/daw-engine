@@ -32,6 +32,7 @@ export class AudioEngine {
   private static instance: AudioEngine | undefined;
   private backend: AudioProvider;
   public session: Session;
+  private disposed = false;
 
   // MIDI Recording State
   private midiInput: MidiInput;
@@ -71,6 +72,16 @@ export class AudioEngine {
     return AudioEngine.instance;
   }
 
+  /**
+   * 호출자가 생명주기를 소유하는 독립 엔진을 만듭니다.
+   *
+   * 브라우저 앱은 격리된 Composition Root를 둘 이상 만들 수 있으므로
+   * getInstance()가 반환하는 프로세스 전역 인스턴스를 공유하지 않습니다.
+   */
+  public static create(backend: AudioProvider): AudioEngine {
+    return new AudioEngine(backend);
+  }
+
   /** Reset the singleton instance. For testing only. */
   public static resetInstance(): void {
     if (AudioEngine.instance) {
@@ -80,7 +91,11 @@ export class AudioEngine {
   }
 
   /** Dispose all listeners and internal state to prevent memory leaks. */
-  private dispose(): void {
+  public dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
     this.stopMidiRecording();
     if (this.syncId !== null) {
       this.cancelFrame(this.syncId);
