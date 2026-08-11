@@ -6324,6 +6324,7 @@ var init_Session = __esm({
         this._ranges = /* @__PURE__ */ new Map();
         this._sendBuses = /* @__PURE__ */ new Map();
         this._markers = /* @__PURE__ */ new Map();
+        this._markerChangeSubscriptions = /* @__PURE__ */ new Map();
         this._regionGroups = /* @__PURE__ */ new Map();
         // Selection State
         this._selectedRegionIds = /* @__PURE__ */ new Set();
@@ -6884,20 +6885,31 @@ var init_Session = __esm({
       addMarker(name, position, color, id) {
         const markerId = id ?? crypto.randomUUID();
         const marker = new Marker(markerId, name, position, color);
-        this._markers.set(markerId, marker);
-        marker.changed.connect(() => {
-          this.markerChanged.emit(marker);
-        });
-        this.markerAdded.emit(marker);
-        return marker;
+        return this.registerMarker(marker, true);
       }
       removeMarker(markerId) {
         const marker = this._markers.get(markerId);
         if (marker) {
           marker.removed.emit();
+          this._markerChangeSubscriptions.get(markerId)?.dispose();
+          this._markerChangeSubscriptions.delete(markerId);
           this._markers.delete(markerId);
           this.markerRemoved.emit(markerId);
         }
+      }
+      registerMarker(marker, emitAdded) {
+        this._markerChangeSubscriptions.get(marker.id)?.dispose();
+        this._markers.set(marker.id, marker);
+        this._markerChangeSubscriptions.set(
+          marker.id,
+          marker.changed.connect(() => {
+            this.markerChanged.emit(marker);
+          })
+        );
+        if (emitAdded) {
+          this.markerAdded.emit(marker);
+        }
+        return marker;
       }
       getMarker(markerId) {
         return this._markers.get(markerId);
@@ -7356,7 +7368,7 @@ var init_Session = __esm({
               markerData.color,
               markerData.locked
             );
-            session._markers.set(marker.id, marker);
+            session.registerMarker(marker, false);
           }
         }
         session.loopRangeId = snapshot.loopRangeId;
@@ -37586,22 +37598,23 @@ var AddMarkerCommand = class {
     this.name = name;
     this.position = position;
     this.color = color;
+    this.markerId = crypto.randomUUID();
+  }
+  get id() {
+    return this.markerId;
   }
   async execute() {
     const session = AudioEngine.getInstance().session;
-    const marker = session.addMarker(this.name, this.position, this.color);
-    this.markerId = marker.id;
+    session.addMarker(this.name, this.position, this.color, this.markerId);
     logger.debug(
       "AddMarkerCommand",
       `Added marker "${this.name}" at frame ${this.position}`
     );
   }
   async undo() {
-    if (this.markerId) {
-      const session = AudioEngine.getInstance().session;
-      session.removeMarker(this.markerId);
-      logger.debug("AddMarkerCommand", `Undo: removed marker "${this.name}"`);
-    }
+    const session = AudioEngine.getInstance().session;
+    session.removeMarker(this.markerId);
+    logger.debug("AddMarkerCommand", `Undo: removed marker "${this.name}"`);
   }
   async redo() {
     await this.execute();
@@ -37657,6 +37670,7 @@ var MoveMarkerCommand = class {
     const session = AudioEngine.getInstance().session;
     const marker = session.getMarker(this.markerId);
     if (!marker) throw new Error(`Marker not found: ${this.markerId}`);
+    if (marker.locked) throw new Error(`Marker is locked: ${this.markerId}`);
     this.oldPosition = marker.position;
     marker.position = this.newPosition;
     logger.debug(
@@ -37675,6 +37689,68 @@ var MoveMarkerCommand = class {
   }
   async redo() {
     await this.execute();
+  }
+};
+
+// core/src/commands/impl/RenameMarkerCommand.ts
+var RenameMarkerCommand = class {
+  constructor(session, markerId, name) {
+    this.session = session;
+    this.markerId = markerId;
+    this.name = name;
+    this.previousName = null;
+  }
+  async execute() {
+    const marker = this.requireMarker();
+    this.previousName ??= marker.name;
+    marker.name = this.name;
+  }
+  async undo() {
+    if (this.previousName === null) {
+      return;
+    }
+    this.requireMarker().name = this.previousName;
+  }
+  async redo() {
+    this.requireMarker().name = this.name;
+  }
+  requireMarker() {
+    const marker = this.session.getMarker(this.markerId);
+    if (!marker) {
+      throw new Error(`Marker not found: ${this.markerId}`);
+    }
+    return marker;
+  }
+};
+
+// core/src/commands/impl/SetMarkerLockedCommand.ts
+var SetMarkerLockedCommand = class {
+  constructor(session, markerId, locked) {
+    this.session = session;
+    this.markerId = markerId;
+    this.locked = locked;
+    this.previousLocked = null;
+  }
+  async execute() {
+    const marker = this.requireMarker();
+    this.previousLocked ??= marker.locked;
+    marker.locked = this.locked;
+  }
+  async undo() {
+    if (this.previousLocked === null) {
+      return;
+    }
+    this.requireMarker().locked = this.previousLocked;
+  }
+  async redo() {
+    this.requireMarker().locked = this.locked;
+  }
+  requireMarker() {
+    const marker = this.session.getMarker(this.markerId);
+    if (!marker) {
+      throw new Error(`Marker not found: ${this.markerId}`);
+    }
+    return marker;
   }
 };
 
@@ -37709,7 +37785,8 @@ var MarkerHandler = class {
         await history.execute(cmd);
         return {
           success: true,
-          message: `Added marker "${payload.name}" at frame ${payload.position}`
+          message: `Added marker "${payload.name}" at frame ${payload.position}`,
+          data: { markerId: cmd.id }
         };
       }
       case CommandType.REMOVE_MARKER: {
@@ -37722,7 +37799,14 @@ var MarkerHandler = class {
           payload.markerId,
           payload.position
         );
-        await history.execute(cmd);
+        try {
+          await history.execute(cmd);
+        } catch (error) {
+          return {
+            success: false,
+            message: error.message
+          };
+        }
         return {
           success: true,
           message: `Moved marker to frame ${payload.position}`
@@ -37781,7 +37865,12 @@ var MarkerHandler = class {
             message: `Marker not found: ${payload.markerId}`
           };
         }
-        marker.name = payload.name;
+        const cmd = new RenameMarkerCommand(
+          audioEngine.session,
+          payload.markerId,
+          payload.name
+        );
+        await history.execute(cmd);
         return {
           success: true,
           message: `Marker renamed to "${payload.name}"`
@@ -37797,7 +37886,12 @@ var MarkerHandler = class {
             message: `Marker not found: ${payload.markerId}`
           };
         }
-        marker.locked = payload.locked;
+        const cmd = new SetMarkerLockedCommand(
+          audioEngine.session,
+          payload.markerId,
+          payload.locked
+        );
+        await history.execute(cmd);
         return {
           success: true,
           message: `Marker ${payload.locked ? "locked" : "unlocked"}`

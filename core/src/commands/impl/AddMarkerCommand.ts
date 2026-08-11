@@ -5,7 +5,7 @@ import { FrameCount } from "../../domain/types";
 
 import { logger } from "../../utils/Logger";
 export class AddMarkerCommand implements UndoableCommand {
-  private markerId?: MarkerId;
+  private readonly markerId = crypto.randomUUID() as MarkerId;
 
   constructor(
     private name: string,
@@ -13,10 +13,14 @@ export class AddMarkerCommand implements UndoableCommand {
     private color?: string,
   ) {}
 
+  public get id(): MarkerId {
+    return this.markerId;
+  }
+
   async execute(): Promise<void> {
     const session = AudioEngine.getInstance().session;
-    const marker = session.addMarker(this.name, this.position, this.color);
-    this.markerId = marker.id;
+    // Reuse one ID across redo so external marker references remain valid.
+    session.addMarker(this.name, this.position, this.color, this.markerId);
     logger.debug(
       "AddMarkerCommand",
       `Added marker "${this.name}" at frame ${this.position}`,
@@ -24,11 +28,9 @@ export class AddMarkerCommand implements UndoableCommand {
   }
 
   async undo(): Promise<void> {
-    if (this.markerId) {
-      const session = AudioEngine.getInstance().session;
-      session.removeMarker(this.markerId);
-      logger.debug("AddMarkerCommand", `Undo: removed marker "${this.name}"`);
-    }
+    const session = AudioEngine.getInstance().session;
+    session.removeMarker(this.markerId);
+    logger.debug("AddMarkerCommand", `Undo: removed marker "${this.name}"`);
   }
 
   async redo(): Promise<void> {

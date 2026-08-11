@@ -94,6 +94,8 @@ export class Session {
   private _ranges: Map<RangeId, Range> = new Map();
   private _sendBuses: Map<SendBusId, SendBus> = new Map();
   private _markers: Map<MarkerId, Marker> = new Map();
+  private _markerChangeSubscriptions: Map<MarkerId, { dispose: () => void }> =
+    new Map();
   private _regionGroups: Map<RegionGroupId, RegionGroup> = new Map();
   public readonly masterBus: Route;
 
@@ -815,24 +817,34 @@ export class Session {
   ): Marker {
     const markerId = id ?? (crypto.randomUUID() as MarkerId);
     const marker = new Marker(markerId, name, position, color);
-    this._markers.set(markerId, marker);
-
-    // Subscribe to marker changes
-    marker.changed.connect(() => {
-      this.markerChanged.emit(marker);
-    });
-
-    this.markerAdded.emit(marker);
-    return marker;
+    return this.registerMarker(marker, true);
   }
 
   public removeMarker(markerId: MarkerId): void {
     const marker = this._markers.get(markerId);
     if (marker) {
       marker.removed.emit();
+      this._markerChangeSubscriptions.get(markerId)?.dispose();
+      this._markerChangeSubscriptions.delete(markerId);
       this._markers.delete(markerId);
       this.markerRemoved.emit(markerId);
     }
+  }
+
+  private registerMarker(marker: Marker, emitAdded: boolean): Marker {
+    // A restored marker needs the same change forwarding as a newly added marker.
+    this._markerChangeSubscriptions.get(marker.id)?.dispose();
+    this._markers.set(marker.id, marker);
+    this._markerChangeSubscriptions.set(
+      marker.id,
+      marker.changed.connect(() => {
+        this.markerChanged.emit(marker);
+      }),
+    );
+    if (emitAdded) {
+      this.markerAdded.emit(marker);
+    }
+    return marker;
   }
 
   public getMarker(markerId: MarkerId): Marker | undefined {
@@ -1380,7 +1392,7 @@ export class Session {
           markerData.color,
           markerData.locked,
         );
-        session._markers.set(marker.id, marker);
+        session.registerMarker(marker, false);
       }
     }
 
