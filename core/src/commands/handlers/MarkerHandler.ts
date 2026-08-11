@@ -9,6 +9,8 @@ import { CommandType } from "../types";
 import { AddMarkerCommand } from "../impl/AddMarkerCommand";
 import { RemoveMarkerCommand } from "../impl/RemoveMarkerCommand";
 import { MoveMarkerCommand } from "../impl/MoveMarkerCommand";
+import { RenameMarkerCommand } from "../impl/RenameMarkerCommand";
+import { SetMarkerLockedCommand } from "../impl/SetMarkerLockedCommand";
 
 /**
  * Marker Command Handler
@@ -50,6 +52,7 @@ export class MarkerHandler implements CommandHandler {
         return {
           success: true,
           message: `Added marker "${payload.name}" at frame ${payload.position}`,
+          data: { markerId: cmd.id },
         };
       }
 
@@ -64,7 +67,14 @@ export class MarkerHandler implements CommandHandler {
           payload.markerId as string,
           payload.position as number,
         );
-        await history.execute(cmd);
+        try {
+          await history.execute(cmd);
+        } catch (error) {
+          return {
+            success: false,
+            message: (error as Error).message,
+          };
+        }
         return {
           success: true,
           message: `Moved marker to frame ${payload.position}`,
@@ -127,7 +137,12 @@ export class MarkerHandler implements CommandHandler {
             message: `Marker not found: ${payload.markerId}`,
           };
         }
-        marker.name = payload.name as string;
+        const cmd = new RenameMarkerCommand(
+          audioEngine.session,
+          payload.markerId as string,
+          payload.name as string,
+        );
+        await history.execute(cmd);
         return {
           success: true,
           message: `Marker renamed to "${payload.name}"`,
@@ -144,7 +159,12 @@ export class MarkerHandler implements CommandHandler {
             message: `Marker not found: ${payload.markerId}`,
           };
         }
-        marker.locked = payload.locked as boolean;
+        const cmd = new SetMarkerLockedCommand(
+          audioEngine.session,
+          payload.markerId as string,
+          payload.locked as boolean,
+        );
+        await history.execute(cmd);
         return {
           success: true,
           message: `Marker ${payload.locked ? "locked" : "unlocked"}`,

@@ -2789,6 +2789,7 @@ export declare class Session {
 	private _ranges;
 	private _sendBuses;
 	private _markers;
+	private _markerChangeSubscriptions;
 	private _regionGroups;
 	readonly masterBus: Route;
 	private _selectedRegionIds;
@@ -2955,6 +2956,7 @@ export declare class Session {
 	get sendBuses(): ReadonlyArray<SendBus>;
 	addMarker(name: string, position: FrameCount, color?: string, id?: MarkerId): Marker;
 	removeMarker(markerId: MarkerId): void;
+	private registerMarker;
 	getMarker(markerId: MarkerId): Marker | undefined;
 	get markers(): ReadonlyArray<Marker>;
 	/**
