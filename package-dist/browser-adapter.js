@@ -3224,13 +3224,14 @@ var SendBus = class {
 };
 
 // core/src/domain/Marker.ts
+var MIN_MARKER_POSITION = 0;
 var Marker = class _Marker {
   constructor(id, name, position, color = "#ffcc00", locked = false) {
     this.changed = new Signal();
     this.removed = new Signal();
     this.id = id;
     this._name = name;
-    this._position = position;
+    this._position = Math.max(MIN_MARKER_POSITION, position);
     this._color = color;
     this._locked = locked;
   }
@@ -3249,7 +3250,7 @@ var Marker = class _Marker {
   set position(value) {
     if (this._locked) return;
     if (this._position !== value) {
-      this._position = Math.max(0, value);
+      this._position = Math.max(MIN_MARKER_POSITION, value);
       this.changed.emit();
     }
   }
@@ -5727,6 +5728,7 @@ var Session = class _Session {
     this._ranges = /* @__PURE__ */ new Map();
     this._sendBuses = /* @__PURE__ */ new Map();
     this._markers = /* @__PURE__ */ new Map();
+    this._markerChangeSubscriptions = /* @__PURE__ */ new Map();
     this._regionGroups = /* @__PURE__ */ new Map();
     // Selection State
     this._selectedRegionIds = /* @__PURE__ */ new Set();
@@ -6287,20 +6289,31 @@ var Session = class _Session {
   addMarker(name, position, color, id) {
     const markerId = id ?? crypto.randomUUID();
     const marker = new Marker(markerId, name, position, color);
-    this._markers.set(markerId, marker);
-    marker.changed.connect(() => {
-      this.markerChanged.emit(marker);
-    });
-    this.markerAdded.emit(marker);
-    return marker;
+    return this.registerMarker(marker, true);
   }
   removeMarker(markerId) {
     const marker = this._markers.get(markerId);
     if (marker) {
       marker.removed.emit();
+      this._markerChangeSubscriptions.get(markerId)?.dispose();
+      this._markerChangeSubscriptions.delete(markerId);
       this._markers.delete(markerId);
       this.markerRemoved.emit(markerId);
     }
+  }
+  registerMarker(marker, emitAdded) {
+    this._markerChangeSubscriptions.get(marker.id)?.dispose();
+    this._markers.set(marker.id, marker);
+    this._markerChangeSubscriptions.set(
+      marker.id,
+      marker.changed.connect(() => {
+        this.markerChanged.emit(marker);
+      })
+    );
+    if (emitAdded) {
+      this.markerAdded.emit(marker);
+    }
+    return marker;
   }
   getMarker(markerId) {
     return this._markers.get(markerId);
@@ -6759,7 +6772,7 @@ var Session = class _Session {
           markerData.color,
           markerData.locked
         );
-        session._markers.set(marker.id, marker);
+        session.registerMarker(marker, false);
       }
     }
     session.loopRangeId = snapshot.loopRangeId;

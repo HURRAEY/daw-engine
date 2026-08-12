@@ -3543,18 +3543,19 @@ var init_SendBus = __esm({
 });
 
 // core/src/domain/Marker.ts
-var Marker;
+var MIN_MARKER_POSITION, Marker;
 var init_Marker = __esm({
   "core/src/domain/Marker.ts"() {
     "use strict";
     init_Signal();
+    MIN_MARKER_POSITION = 0;
     Marker = class _Marker {
       constructor(id, name, position, color = "#ffcc00", locked = false) {
         this.changed = new Signal();
         this.removed = new Signal();
         this.id = id;
         this._name = name;
-        this._position = position;
+        this._position = Math.max(MIN_MARKER_POSITION, position);
         this._color = color;
         this._locked = locked;
       }
@@ -3573,7 +3574,7 @@ var init_Marker = __esm({
       set position(value) {
         if (this._locked) return;
         if (this._position !== value) {
-          this._position = Math.max(0, value);
+          this._position = Math.max(MIN_MARKER_POSITION, value);
           this.changed.emit();
         }
       }
@@ -37767,37 +37768,46 @@ var MarkerHandler = class {
       CommandType.RENAME_MARKER,
       CommandType.SET_MARKER_LOCKED
     ]);
+    this.commandsWithoutPayload = /* @__PURE__ */ new Set([
+      CommandType.LIST_MARKERS,
+      CommandType.GOTO_NEXT_MARKER,
+      CommandType.GOTO_PREV_MARKER
+    ]);
   }
   canHandle(commandType) {
     return this.supportedCommands.has(commandType);
   }
   async execute(commandType, payload, audioEngine, history) {
-    if (!payload) {
+    if (!payload && !this.commandsWithoutPayload.has(commandType)) {
       return { success: false, message: `${commandType} requires a payload` };
     }
+    const markerPayload = payload ?? {};
     switch (commandType) {
       case CommandType.ADD_MARKER: {
         const cmd = new AddMarkerCommand(
-          payload.name,
-          payload.position,
-          payload.color
+          markerPayload.name,
+          markerPayload.position,
+          markerPayload.color
         );
         await history.execute(cmd);
         return {
           success: true,
-          message: `Added marker "${payload.name}" at frame ${payload.position}`,
+          message: `Added marker "${markerPayload.name}" at frame ${markerPayload.position}`,
           data: { markerId: cmd.id }
         };
       }
       case CommandType.REMOVE_MARKER: {
-        const cmd = new RemoveMarkerCommand(payload.markerId);
+        const cmd = new RemoveMarkerCommand(markerPayload.markerId);
         await history.execute(cmd);
-        return { success: true, message: `Removed marker ${payload.markerId}` };
+        return {
+          success: true,
+          message: `Removed marker ${markerPayload.markerId}`
+        };
       }
       case CommandType.MOVE_MARKER: {
         const cmd = new MoveMarkerCommand(
-          payload.markerId,
-          payload.position
+          markerPayload.markerId,
+          markerPayload.position
         );
         try {
           await history.execute(cmd);
@@ -37809,7 +37819,7 @@ var MarkerHandler = class {
         }
         return {
           success: true,
-          message: `Moved marker to frame ${payload.position}`
+          message: `Moved marker to frame ${markerPayload.position}`
         };
       }
       case CommandType.LIST_MARKERS: {
@@ -37857,44 +37867,44 @@ var MarkerHandler = class {
       }
       case CommandType.RENAME_MARKER: {
         const marker = audioEngine.session.getMarker(
-          payload.markerId
+          markerPayload.markerId
         );
         if (!marker) {
           return {
             success: false,
-            message: `Marker not found: ${payload.markerId}`
+            message: `Marker not found: ${markerPayload.markerId}`
           };
         }
         const cmd = new RenameMarkerCommand(
           audioEngine.session,
-          payload.markerId,
-          payload.name
+          markerPayload.markerId,
+          markerPayload.name
         );
         await history.execute(cmd);
         return {
           success: true,
-          message: `Marker renamed to "${payload.name}"`
+          message: `Marker renamed to "${markerPayload.name}"`
         };
       }
       case CommandType.SET_MARKER_LOCKED: {
         const marker = audioEngine.session.getMarker(
-          payload.markerId
+          markerPayload.markerId
         );
         if (!marker) {
           return {
             success: false,
-            message: `Marker not found: ${payload.markerId}`
+            message: `Marker not found: ${markerPayload.markerId}`
           };
         }
         const cmd = new SetMarkerLockedCommand(
           audioEngine.session,
-          payload.markerId,
-          payload.locked
+          markerPayload.markerId,
+          markerPayload.locked
         );
         await history.execute(cmd);
         return {
           success: true,
-          message: `Marker ${payload.locked ? "locked" : "unlocked"}`
+          message: `Marker ${markerPayload.locked ? "locked" : "unlocked"}`
         };
       }
       default:

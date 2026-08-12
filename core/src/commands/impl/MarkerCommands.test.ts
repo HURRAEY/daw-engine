@@ -129,4 +129,68 @@ describe("marker commands", () => {
     expect(marker.position).toBe(12_000);
     expect(history.undoDepth).toBe(0);
   });
+
+  it("lists markers without a payload", async () => {
+    const marker = audioEngine.session.addMarker(
+      "Verse",
+      12_000,
+      "#ffcc00",
+      "marker-1",
+    );
+
+    const result = await handler.execute(
+      CommandType.LIST_MARKERS,
+      undefined,
+      audioEngine,
+      history,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual([
+      {
+        id: marker.id,
+        name: marker.name,
+        position: marker.position,
+        time: "0.27s",
+        color: marker.color,
+        locked: marker.locked,
+      },
+    ]);
+  });
+
+  it("goes to the next marker without a payload", async () => {
+    audioEngine.session.addMarker("Chorus", 48_000, "#ffcc00", "marker-1");
+    vi.spyOn(audioEngine, "getCurrentFrame").mockReturnValue(24_000);
+    const seekSpy = vi.spyOn(audioEngine, "seek");
+
+    const result = await handler.execute(
+      CommandType.GOTO_NEXT_MARKER,
+      undefined,
+      audioEngine,
+      history,
+    );
+
+    expect(result.success).toBe(true);
+    expect(seekSpy).toHaveBeenCalledWith(
+      48_000 / audioEngine.session.sampleRate,
+    );
+  });
+
+  it("goes to the previous marker without a payload", async () => {
+    audioEngine.session.addMarker("Verse", 24_000, "#ffcc00", "marker-1");
+    vi.spyOn(audioEngine, "getCurrentFrame").mockReturnValue(48_000);
+    const seekSpy = vi.spyOn(audioEngine, "seek");
+
+    const result = await handler.execute(
+      CommandType.GOTO_PREV_MARKER,
+      undefined,
+      audioEngine,
+      history,
+    );
+
+    expect(result.success).toBe(true);
+    expect(seekSpy).toHaveBeenCalledWith(
+      24_000 / audioEngine.session.sampleRate,
+    );
+  });
 });
