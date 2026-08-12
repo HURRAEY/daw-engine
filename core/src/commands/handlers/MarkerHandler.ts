@@ -26,6 +26,11 @@ export class MarkerHandler implements CommandHandler {
     CommandType.RENAME_MARKER,
     CommandType.SET_MARKER_LOCKED,
   ]);
+  private readonly commandsWithoutPayload = new Set<string>([
+    CommandType.LIST_MARKERS,
+    CommandType.GOTO_NEXT_MARKER,
+    CommandType.GOTO_PREV_MARKER,
+  ]);
 
   canHandle(commandType: string): boolean {
     return this.supportedCommands.has(commandType);
@@ -37,35 +42,39 @@ export class MarkerHandler implements CommandHandler {
     audioEngine: AudioEngine,
     history: CommandHistory,
   ): Promise<CommandResult> {
-    if (!payload) {
+    if (!payload && !this.commandsWithoutPayload.has(commandType)) {
       return { success: false, message: `${commandType} requires a payload` };
     }
+    const markerPayload = payload ?? {};
 
     switch (commandType) {
       case CommandType.ADD_MARKER: {
         const cmd = new AddMarkerCommand(
-          payload.name as string,
-          payload.position as number,
-          payload.color as string | undefined,
+          markerPayload.name as string,
+          markerPayload.position as number,
+          markerPayload.color as string | undefined,
         );
         await history.execute(cmd);
         return {
           success: true,
-          message: `Added marker "${payload.name}" at frame ${payload.position}`,
+          message: `Added marker "${markerPayload.name}" at frame ${markerPayload.position}`,
           data: { markerId: cmd.id },
         };
       }
 
       case CommandType.REMOVE_MARKER: {
-        const cmd = new RemoveMarkerCommand(payload.markerId as string);
+        const cmd = new RemoveMarkerCommand(markerPayload.markerId as string);
         await history.execute(cmd);
-        return { success: true, message: `Removed marker ${payload.markerId}` };
+        return {
+          success: true,
+          message: `Removed marker ${markerPayload.markerId}`,
+        };
       }
 
       case CommandType.MOVE_MARKER: {
         const cmd = new MoveMarkerCommand(
-          payload.markerId as string,
-          payload.position as number,
+          markerPayload.markerId as string,
+          markerPayload.position as number,
         );
         try {
           await history.execute(cmd);
@@ -77,7 +86,7 @@ export class MarkerHandler implements CommandHandler {
         }
         return {
           success: true,
-          message: `Moved marker to frame ${payload.position}`,
+          message: `Moved marker to frame ${markerPayload.position}`,
         };
       }
 
@@ -129,45 +138,45 @@ export class MarkerHandler implements CommandHandler {
 
       case CommandType.RENAME_MARKER: {
         const marker = audioEngine.session.getMarker(
-          payload.markerId as string,
+          markerPayload.markerId as string,
         );
         if (!marker) {
           return {
             success: false,
-            message: `Marker not found: ${payload.markerId}`,
+            message: `Marker not found: ${markerPayload.markerId}`,
           };
         }
         const cmd = new RenameMarkerCommand(
           audioEngine.session,
-          payload.markerId as string,
-          payload.name as string,
+          markerPayload.markerId as string,
+          markerPayload.name as string,
         );
         await history.execute(cmd);
         return {
           success: true,
-          message: `Marker renamed to "${payload.name}"`,
+          message: `Marker renamed to "${markerPayload.name}"`,
         };
       }
 
       case CommandType.SET_MARKER_LOCKED: {
         const marker = audioEngine.session.getMarker(
-          payload.markerId as string,
+          markerPayload.markerId as string,
         );
         if (!marker) {
           return {
             success: false,
-            message: `Marker not found: ${payload.markerId}`,
+            message: `Marker not found: ${markerPayload.markerId}`,
           };
         }
         const cmd = new SetMarkerLockedCommand(
           audioEngine.session,
-          payload.markerId as string,
-          payload.locked as boolean,
+          markerPayload.markerId as string,
+          markerPayload.locked as boolean,
         );
         await history.execute(cmd);
         return {
           success: true,
-          message: `Marker ${payload.locked ? "locked" : "unlocked"}`,
+          message: `Marker ${markerPayload.locked ? "locked" : "unlocked"}`,
         };
       }
 

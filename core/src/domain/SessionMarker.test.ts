@@ -36,4 +36,12 @@ describe("Session marker lifecycle", () => {
 
     expect(changedMarkerIds).toEqual([]);
   });
+
+  it("clamps an initial negative marker position to zero", () => {
+    const session = new Session("Marker position");
+
+    const marker = session.addMarker("Intro", -1);
+
+    expect(marker.position).toBe(0);
+  });
 });
