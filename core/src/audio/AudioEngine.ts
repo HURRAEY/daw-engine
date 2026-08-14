@@ -58,6 +58,8 @@ export class AudioEngine {
     this.backend = backend;
     this.midiInput = MidiInput.getInstance();
 
+    // backend가 현재 Session 전체를 먼저 구성한 뒤 이후 변경만 signal로 전달한다.
+    this.syncSessionToBackend();
     this.setupSessionListeners();
   }
 
@@ -117,9 +119,9 @@ export class AudioEngine {
     this.sendBusDisposers.clear();
   }
 
-  public setBackend(backend: AudioProvider) {
+  public setBackend(backend: AudioProvider): void {
     this.backend = backend;
-    // Re-setup listeners/state if backend changes (omitted for brevity)
+    this.syncSessionToBackend();
   }
 
   /**
@@ -190,17 +192,198 @@ export class AudioEngine {
     }
   }
 
-  private setupSessionListeners() {
-    // Register Master Bus IO with backend
-    const masterBus = this.session.masterBus;
+  private syncSessionToBackend(): void {
+    const { masterBus } = this.session;
     this.backend.registerMasterIO(masterBus.input.id, masterBus.output.id);
-
-    // Sync master bus processors
-    masterBus.processors.forEach((proc: Processor, index: number) => {
-      const type = this.getProcessorType(proc);
-      this.backend.addMasterProcessor(proc.id, type, index);
-      this.connectMasterProcessorSignals(proc);
+    masterBus.processors.forEach((processor, index) => {
+      this.backend.addMasterProcessor(
+        processor.id,
+        this.getProcessorType(processor),
+        index,
+      );
+      this.syncMasterProcessorState(processor);
     });
+
+    this.backend.setTempo(this.session.tempo);
+    void this.backend.enableMetronome(this.session.metronomeEnabled);
+    this.backend.setMetronomeVolume(this.session.metronomeVolume);
+    this.backend.enableLoop(this.session.loopEnabled);
+    this.syncLoopRange();
+    this.backend.enablePunchRecording(this.session.punchEnabled);
+    this.syncPunchRange();
+    this.backend.seek(this.session.transportFrame / this.session.sampleRate);
+
+    this.session.sources.forEach((source) => {
+      void this.backend.addSource(source);
+    });
+    this.session.tracks.forEach((track) => this.syncTrackToBackend(track));
+    this.session.sendBuses.forEach((sendBus) =>
+      this.syncSendBusToBackend(sendBus),
+    );
+  }
+
+  private syncLoopRange(): void {
+    const range = this.session.getLoopRange();
+    if (!range) {
+      return;
+    }
+    this.backend.setLoopRange(
+      range.start / this.session.sampleRate,
+      range.end / this.session.sampleRate,
+    );
+  }
+
+  private syncPunchRange(): void {
+    const range = this.session.getPunchRange();
+    if (!range) {
+      return;
+    }
+    this.backend.setPunchRange(range.start, range.end);
+  }
+
+  private syncTrackToBackend(track: Track): void {
+    this.createBackendTrack(track);
+    track.route.processors.forEach((processor, index) => {
+      this.backend.addProcessor(
+        track.id,
+        processor.id,
+        this.getProcessorType(processor),
+        index,
+      );
+      this.syncProcessorState(track.id, processor);
+    });
+    track.playlist.getRegions().forEach((region) => {
+      this.backend.scheduleRegion(track.id, AudioEngine.toRegionDTO(region));
+    });
+    track.playlist.getMidiRegions().forEach((midiRegion) => {
+      this.backend.scheduleMidiRegion(
+        track.id,
+        AudioEngine.toMidiRegionDTO(midiRegion),
+      );
+    });
+    this.backend.setMonitor(track.id, track.monitor);
+    this.backend.setTrackMute(track.id, track.mute);
+    this.backend.setTrackSolo(track.id, track.solo);
+    this.backend.setTrackSoloIsolate(track.id, track.soloIsolate);
+    this.backend.setTrackSoloSafe(track.id, track.soloSafe);
+    this.backend.setMonitorMode(track.id, track.monitorMode);
+    this.syncIOConnections(track);
+  }
+
+  private createBackendTrack(track: Track): void {
+    const trackArguments = [
+      track.id,
+      track.name,
+      track.route.input.id,
+      track.route.output.id,
+    ] as const;
+    if (track.type === TrackType.AUX) {
+      this.backend.createAuxTrack(...trackArguments);
+      return;
+    }
+    if (track.type === TrackType.BUS) {
+      this.backend.createBusTrack(...trackArguments);
+      return;
+    }
+    if (track.type === TrackType.MIDI) {
+      this.backend.createMidiTrack(...trackArguments);
+      return;
+    }
+    this.backend.createTrack(...trackArguments);
+  }
+
+  private syncProcessorState(trackId: string, processor: Processor): void {
+    const setParameter = (parameter: string, value: number): void => {
+      this.backend.setProcessorParameter(
+        trackId,
+        processor.id,
+        parameter,
+        value,
+      );
+    };
+    if (processor instanceof GainProcessor) {
+      setParameter("gain", processor.gain);
+    } else if (processor instanceof Panner) {
+      setParameter("pan", processor.azimuth);
+      setParameter("width", processor.width);
+    } else if (processor instanceof PanProcessor) {
+      setParameter("pan", processor.pan);
+      setParameter("width", processor.width);
+    } else if (processor instanceof PolarityProcessor) {
+      setParameter("polarity", processor.inverted ? 1 : 0);
+    } else if (processor instanceof SendProcessor) {
+      setParameter("level", processor.level);
+      setParameter("preFader", processor.preFader ? 1 : 0);
+      setParameter("muted", processor.muted ? 1 : 0);
+    }
+
+    if (processor instanceof PluginInsert) {
+      processor.plugin.getParameters().forEach((parameter) => {
+        setParameter(parameter.id, parameter.value);
+      });
+    }
+    processor.automations.forEach((automation, parameter) => {
+      this.backend.setProcessorAutomation(
+        trackId,
+        processor.id,
+        parameter,
+        automation.getPoints(),
+      );
+    });
+  }
+
+  private syncMasterProcessorState(processor: Processor): void {
+    if (processor instanceof GainProcessor) {
+      this.backend.setMasterGain(processor.gain);
+    }
+    if (processor instanceof PluginInsert) {
+      processor.plugin.getParameters().forEach((parameter) => {
+        this.backend.setMasterProcessorParameter(
+          processor.id,
+          parameter.id,
+          parameter.value,
+        );
+      });
+    }
+  }
+
+  private syncIOConnections(track: Track): void {
+    track.route.input.connections.forEach((destinationId) => {
+      this.backend.connectIO(track.route.input.id, destinationId);
+    });
+    track.route.output.connections.forEach((destinationId) => {
+      this.backend.connectIO(track.route.output.id, destinationId);
+    });
+  }
+
+  private syncSendBusToBackend(sendBus: SendBus): void {
+    this.backend.addSendBus(
+      sendBus.id,
+      sendBus.sourceTrackId,
+      sendBus.destId,
+      sendBus.level,
+      sendBus.preFader,
+    );
+    this.backend.setSendBusActive(sendBus.id, sendBus.active);
+  }
+
+  private clearSessionFromBackend(): void {
+    this.session.sendBuses.forEach((sendBus) => {
+      this.backend.removeSendBus(sendBus.id);
+    });
+    this.session.tracks.forEach((track) => {
+      this.backend.deleteTrack(track.id);
+    });
+    this.session.masterBus.processors.forEach((processor) => {
+      this.backend.removeMasterProcessor(processor.id);
+    });
+  }
+
+  private setupSessionListeners() {
+    const masterBus = this.session.masterBus;
+    masterBus.processors.forEach((processor) =>
+      this.connectMasterProcessorSignals(processor),
+    );
 
     this.signalDisposers.push(
       masterBus.processorAdded.connect((proc: Processor) => {
@@ -249,36 +432,7 @@ export class AudioEngine {
     // Track Added: Sync backend and subscribe to processor signals
     this.signalDisposers.push(
       this.session.trackAdded.connect((track: Track) => {
-        // Use the appropriate backend method based on track type
-        if (track.type === TrackType.AUX) {
-          this.backend.createAuxTrack(
-            track.id,
-            track.name,
-            track.route.input.id,
-            track.route.output.id,
-          );
-        } else if (track.type === TrackType.BUS) {
-          this.backend.createBusTrack(
-            track.id,
-            track.name,
-            track.route.input.id,
-            track.route.output.id,
-          );
-        } else if (track.type === TrackType.MIDI) {
-          this.backend.createMidiTrack(
-            track.id,
-            track.name,
-            track.route.input.id,
-            track.route.output.id,
-          );
-        } else {
-          this.backend.createTrack(
-            track.id,
-            track.name,
-            track.route.input.id,
-            track.route.output.id,
-          );
-        }
+        this.createBackendTrack(track);
 
         const disposers: Array<{ dispose: () => void }> = [];
 
@@ -345,37 +499,9 @@ export class AudioEngine {
     // Send Bus Signals
     this.signalDisposers.push(
       this.session.sendBusAdded.connect((sendBus: SendBus) => {
-        this.backend.addSendBus(
-          sendBus.id,
-          sendBus.sourceTrackId,
-          sendBus.destId,
-          sendBus.level,
-          sendBus.preFader,
-        );
-
+        this.syncSendBusToBackend(sendBus);
         const disposers: Array<{ dispose: () => void }> = [];
-
-        // Subscribe to level changes
-        disposers.push(
-          sendBus.levelChanged.connect((levelDb: number) => {
-            this.backend.setSendBusLevel(sendBus.id, levelDb);
-          }),
-        );
-
-        // Subscribe to preFader changes
-        disposers.push(
-          sendBus.preFaderChanged.connect((preFader: boolean) => {
-            this.backend.setSendBusPreFader(sendBus.id, preFader);
-          }),
-        );
-
-        // Subscribe to active changes
-        disposers.push(
-          sendBus.activeChanged.connect((active: boolean) => {
-            this.backend.setSendBusActive(sendBus.id, active);
-          }),
-        );
-
+        this.bindSendBusSignals(sendBus, disposers);
         this.sendBusDisposers.set(sendBus.id, disposers);
       }),
     );
@@ -407,6 +533,28 @@ export class AudioEngine {
         }
       }
     });
+    this.session.sendBuses.forEach((sendBus) => {
+      const disposers: Array<{ dispose: () => void }> = [];
+      this.bindSendBusSignals(sendBus, disposers);
+      this.sendBusDisposers.set(sendBus.id, disposers);
+    });
+  }
+
+  private bindSendBusSignals(
+    sendBus: SendBus,
+    disposers: Array<{ dispose: () => void }>,
+  ): void {
+    disposers.push(
+      sendBus.levelChanged.connect((levelDb: number) => {
+        this.backend.setSendBusLevel(sendBus.id, levelDb);
+      }),
+      sendBus.preFaderChanged.connect((preFader: boolean) => {
+        this.backend.setSendBusPreFader(sendBus.id, preFader);
+      }),
+      sendBus.activeChanged.connect((active: boolean) => {
+        this.backend.setSendBusActive(sendBus.id, active);
+      }),
+    );
   }
 
   private bindTrackRuntimeSignals(
@@ -1365,16 +1513,20 @@ export class AudioEngine {
   // Session Management
   public loadSession(newSession: Session): void {
     this.stop();
-    // 이전 Session signal을 먼저 해제해야 교체 후의 변경만 backend에 전달된다.
+    // 기존 backend graph를 제거해야 교체된 Session의 Track과 Processor만 남는다.
+    this.clearSessionFromBackend();
     this.disconnectSessionSignals();
     this.session = newSession;
+    this.syncSessionToBackend();
     this.setupSessionListeners();
   }
 
   public loadSessionFromSnapshot(snapshot: SessionSnapshot): void {
     this.stop();
+    this.clearSessionFromBackend();
     this.disconnectSessionSignals();
     this.session = Session.fromJSON(snapshot);
+    this.syncSessionToBackend();
     this.setupSessionListeners();
   }
 }

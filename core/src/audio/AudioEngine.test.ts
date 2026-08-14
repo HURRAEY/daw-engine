@@ -99,4 +99,75 @@ describe("AudioEngine lifecycle", () => {
     expect(providerStub.getMethod("createTrack")).not.toHaveBeenCalled();
     engine.dispose();
   });
+
+  it("hydrates an existing session when loading it", () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const nextSession = new Session("loaded-session");
+    const track = nextSession.addTrack("audio-track", undefined, "track-1");
+    const region = new Region(
+      "region-1",
+      "source-1",
+      0,
+      44_100,
+      0,
+      "audio-region",
+    );
+    track.playlist.addRegion(region);
+
+    providerStub.getMethod("createTrack").mockClear();
+    providerStub.getMethod("scheduleRegion").mockClear();
+    engine.loadSession(nextSession);
+
+    expect(providerStub.getMethod("createTrack")).toHaveBeenCalledWith(
+      "track-1",
+      "audio-track",
+      track.route.input.id,
+      track.route.output.id,
+    );
+    expect(providerStub.getMethod("scheduleRegion")).toHaveBeenCalledWith(
+      "track-1",
+      expect.objectContaining({ id: "region-1" }),
+    );
+    engine.dispose();
+  });
+
+  it("hydrates the replacement backend with the current session", () => {
+    const initialProviderStub = createAudioProviderStub();
+    const replacementProviderStub = createAudioProviderStub();
+    const engine = AudioEngine.create(initialProviderStub.provider);
+    const track = engine.session.addTrack("audio-track", undefined, "track-1");
+    track.setMute(true);
+    track.setSolo(true);
+    track.playlist.addRegion(
+      new Region("region-1", "source-1", 0, 44_100, 0, "audio-region"),
+    );
+
+    engine.setBackend(replacementProviderStub.provider);
+
+    expect(
+      replacementProviderStub.getMethod("createTrack"),
+    ).toHaveBeenCalledWith(
+      "track-1",
+      "audio-track",
+      track.route.input.id,
+      track.route.output.id,
+    );
+    expect(
+      replacementProviderStub.getMethod("addProcessor"),
+    ).toHaveBeenCalledTimes(track.route.processors.length);
+    expect(
+      replacementProviderStub.getMethod("setTrackMute"),
+    ).toHaveBeenCalledWith("track-1", true);
+    expect(
+      replacementProviderStub.getMethod("setTrackSolo"),
+    ).toHaveBeenCalledWith("track-1", true);
+    expect(
+      replacementProviderStub.getMethod("scheduleRegion"),
+    ).toHaveBeenCalledWith(
+      "track-1",
+      expect.objectContaining({ id: "region-1" }),
+    );
+    engine.dispose();
+  });
 });
