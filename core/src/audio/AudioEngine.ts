@@ -20,13 +20,16 @@ import { PanProcessor } from "../processing/PanProcessor";
 import { Panner } from "../processing/Panner";
 import { PolarityProcessor } from "../processing/PolarityProcessor";
 import { SendProcessor } from "../processing/SendProcessor";
-import { MeterProcessor } from "../processing/MeterProcessor";
 import { PluginInsert } from "../processing/PluginInsert";
 import { AutomationList } from "../automation/AutomationList";
 import { SendBus } from "../domain/SendBus";
 import { Source } from "../domain/Source";
 import { MonitorMode } from "../domain/MonitorMode";
 import { logger } from "../utils/Logger";
+import {
+  createRoutingSnapshot,
+  getProcessorRuntimeType,
+} from "./engine/RoutingSnapshot";
 
 export class AudioEngine {
   private static instance: AudioEngine | undefined;
@@ -198,7 +201,7 @@ export class AudioEngine {
     masterBus.processors.forEach((processor, index) => {
       this.backend.addMasterProcessor(
         processor.id,
-        this.getProcessorType(processor),
+        getProcessorRuntimeType(processor),
         index,
       );
       this.syncMasterProcessorState(processor);
@@ -220,6 +223,11 @@ export class AudioEngine {
     this.session.sendBuses.forEach((sendBus) =>
       this.syncSendBusToBackend(sendBus),
     );
+    this.syncRoutingSnapshot();
+  }
+
+  private syncRoutingSnapshot(): void {
+    this.backend.applyRoutingSnapshot(createRoutingSnapshot(this.session));
   }
 
   private syncLoopRange(): void {
@@ -247,7 +255,7 @@ export class AudioEngine {
       this.backend.addProcessor(
         track.id,
         processor.id,
-        this.getProcessorType(processor),
+        getProcessorRuntimeType(processor),
         index,
       );
       this.syncProcessorState(track.id, processor);
@@ -388,15 +396,17 @@ export class AudioEngine {
     this.signalDisposers.push(
       masterBus.processorAdded.connect((proc: Processor) => {
         const index = masterBus.processors.indexOf(proc);
-        const type = this.getProcessorType(proc);
+        const type = getProcessorRuntimeType(proc);
         this.backend.addMasterProcessor(proc.id, type, index);
         this.connectMasterProcessorSignals(proc);
+        this.syncRoutingSnapshot();
       }),
     );
 
     this.signalDisposers.push(
       masterBus.processorRemoved.connect((procId: string) => {
         this.backend.removeMasterProcessor(procId);
+        this.syncRoutingSnapshot();
       }),
     );
 
@@ -438,13 +448,14 @@ export class AudioEngine {
 
         // Sync initial processors
         track.route.processors.forEach((proc: Processor, index: number) => {
-          const type = this.getProcessorType(proc);
+          const type = getProcessorRuntimeType(proc);
           this.backend.addProcessor(track.id, proc.id, type, index);
           this.connectProcessorSignals(track.id, proc, disposers);
         });
 
         this.bindTrackRuntimeSignals(track, disposers);
         this.trackDisposers.set(track.id, disposers);
+        this.syncRoutingSnapshot();
       }),
     );
 
@@ -457,6 +468,7 @@ export class AudioEngine {
           this.trackDisposers.delete(trackId);
         }
         this.backend.deleteTrack(trackId);
+        this.syncRoutingSnapshot();
       }),
     );
 
@@ -503,6 +515,7 @@ export class AudioEngine {
         const disposers: Array<{ dispose: () => void }> = [];
         this.bindSendBusSignals(sendBus, disposers);
         this.sendBusDisposers.set(sendBus.id, disposers);
+        this.syncRoutingSnapshot();
       }),
     );
 
@@ -514,6 +527,13 @@ export class AudioEngine {
           this.sendBusDisposers.delete(sendBusId);
         }
         this.backend.removeSendBus(sendBusId);
+        this.syncRoutingSnapshot();
+      }),
+    );
+
+    this.signalDisposers.push(
+      this.session.sidechainConfigChanged.connect(() => {
+        this.syncRoutingSnapshot();
       }),
     );
 
@@ -553,6 +573,7 @@ export class AudioEngine {
       }),
       sendBus.activeChanged.connect((active: boolean) => {
         this.backend.setSendBusActive(sendBus.id, active);
+        this.syncRoutingSnapshot();
       }),
     );
   }
@@ -564,12 +585,14 @@ export class AudioEngine {
     disposers.push(
       track.route.processorAdded.connect((processor: Processor) => {
         const index = track.route.processors.indexOf(processor);
-        const type = this.getProcessorType(processor);
+        const type = getProcessorRuntimeType(processor);
         this.backend.addProcessor(track.id, processor.id, type, index);
         this.connectProcessorSignals(track.id, processor, disposers);
+        this.syncRoutingSnapshot();
       }),
       track.route.processorRemoved.connect((processorId: string) => {
         this.backend.removeProcessor(track.id, processorId);
+        this.syncRoutingSnapshot();
       }),
       track.playlist.regionAdded.connect((region: Region) => {
         this.backend.scheduleRegion(track.id, AudioEngine.toRegionDTO(region));
@@ -663,11 +686,13 @@ export class AudioEngine {
         disposers.push(
           route.output.connected.connect((destId: string) => {
             this.backend.connectIO(route.output.id, destId);
+            this.syncRoutingSnapshot();
           }),
         );
         disposers.push(
           route.output.disconnected.connect((destId: string) => {
             this.backend.disconnectIO(route.output.id, destId);
+            this.syncRoutingSnapshot();
           }),
         );
       }
@@ -676,31 +701,21 @@ export class AudioEngine {
         disposers.push(
           route.input.connected.connect((destId: string) => {
             this.backend.connectIO(route.input.id, destId);
+            this.syncRoutingSnapshot();
           }),
         );
         disposers.push(
           route.input.disconnected.connect((destId: string) => {
             this.backend.disconnectIO(route.input.id, destId);
+            this.syncRoutingSnapshot();
           }),
         );
       }
     }
   }
 
-  private getProcessorType(proc: Processor): string {
-    if (proc instanceof GainProcessor) {
-      return proc.name === "Trim" ? "Trim" : "Fader";
-    }
-    if (proc instanceof Panner) return "Panner";
-    if (proc instanceof PanProcessor) return "Panner";
-    if (proc instanceof PolarityProcessor) return "Polarity";
-    if (proc instanceof SendProcessor) return "Send";
-    if (proc instanceof MeterProcessor) return "Meter";
-    if (proc instanceof PluginInsert) return `Insert: ${proc.plugin.name}`;
-    return "Unknown";
-  }
-
   private connectMasterProcessorSignals(proc: Processor): void {
+    this.bindProcessorSnapshotSignals(proc, this.signalDisposers);
     if (proc instanceof GainProcessor) {
       this.signalDisposers.push(
         proc.gainChanged.connect((val: number) => {
@@ -728,6 +743,7 @@ export class AudioEngine {
     proc: Processor,
     disposers: Array<{ dispose: () => void }>,
   ): void {
+    this.bindProcessorSnapshotSignals(proc, disposers);
     if (proc instanceof GainProcessor) {
       disposers.push(
         proc.gainChanged.connect((val: number) => {
@@ -834,6 +850,18 @@ export class AudioEngine {
         ),
       );
     }
+  }
+
+  private bindProcessorSnapshotSignals(
+    processor: Processor,
+    disposers: Array<{ dispose: () => void }>,
+  ): void {
+    const syncSnapshot = (): void => this.syncRoutingSnapshot();
+    disposers.push(
+      processor.activeChanged.connect(syncSnapshot),
+      processor.latencyChanged.connect(syncSnapshot),
+      processor.tailLengthChanged.connect(syncSnapshot),
+    );
   }
 
   private bindAutomationList(

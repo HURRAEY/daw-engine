@@ -170,4 +170,55 @@ describe("AudioEngine lifecycle", () => {
     );
     engine.dispose();
   });
+
+  it("publishes an immutable routing snapshot after topology changes", () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    providerStub.getMethod("applyRoutingSnapshot").mockClear();
+
+    engine.session.addTrack("audio-track", undefined, "track-1");
+
+    expect(
+      providerStub.getMethod("applyRoutingSnapshot"),
+    ).toHaveBeenCalledTimes(1);
+    const snapshot = providerStub.getMethod("applyRoutingSnapshot").mock
+      .calls[0][0];
+    expect(snapshot.nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "track-1" })]),
+    );
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    engine.dispose();
+  });
+
+  it("publishes sidechain topology changes", () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    engine.session.addTrack("source-track", undefined, "source-track");
+    const targetTrack = engine.session.addTrack(
+      "target-track",
+      undefined,
+      "target-track",
+    );
+    providerStub.getMethod("applyRoutingSnapshot").mockClear();
+
+    const sidechain = engine.session.addSidechainConfig(
+      targetTrack.id,
+      targetTrack.route.processors[0].id,
+      "sidechain-1",
+    );
+    sidechain.setSource("source-track");
+    sidechain.setEnabled(true);
+
+    const applyRoutingSnapshot = providerStub.getMethod("applyRoutingSnapshot");
+    expect(applyRoutingSnapshot).toHaveBeenCalled();
+    const latestSnapshot = applyRoutingSnapshot.mock.lastCall?.[0];
+    expect(latestSnapshot.edges).toContainEqual(
+      expect.objectContaining({
+        sourceId: "source-track",
+        targetId: "target-track",
+        type: "sidechain",
+      }),
+    );
+    engine.dispose();
+  });
 });

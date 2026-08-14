@@ -173,6 +173,9 @@ export class Session {
 
   // Sidechain Configs (Phase 12-3)
   private _sidechainConfigs: Map<string, SidechainConfig> = new Map();
+  private _sidechainSubscriptions: Map<string, Array<{ dispose: () => void }>> =
+    new Map();
+  public readonly sidechainConfigChanged = new Signal<void>();
 
   // ── Latency Compensation ────────────────────────────────────────────────
   /**
@@ -1044,12 +1047,19 @@ export class Session {
       targetTrackId,
       targetProcessorId,
     );
-    this._sidechainConfigs.set(configId, config);
+    this.registerSidechainConfig(config, true);
     return config;
   }
 
   public removeSidechainConfig(configId: string): void {
-    this._sidechainConfigs.delete(configId);
+    if (!this._sidechainConfigs.delete(configId)) {
+      return;
+    }
+    this._sidechainSubscriptions
+      .get(configId)
+      ?.forEach((subscription) => subscription.dispose());
+    this._sidechainSubscriptions.delete(configId);
+    this.sidechainConfigChanged.emit();
   }
 
   public getSidechainConfig(configId: string): SidechainConfig | undefined {
@@ -1062,6 +1072,27 @@ export class Session {
     return Array.from(this._sidechainConfigs.values()).filter(
       (c) => c.targetTrackId === trackId,
     );
+  }
+
+  public get sidechainConfigs(): ReadonlyArray<SidechainConfig> {
+    return Array.from(this._sidechainConfigs.values());
+  }
+
+  private registerSidechainConfig(
+    config: SidechainConfig,
+    emitChange: boolean,
+  ): void {
+    this._sidechainConfigs.set(config.id, config);
+    const notifyRoutingChange = (): void => {
+      this.sidechainConfigChanged.emit();
+    };
+    this._sidechainSubscriptions.set(config.id, [
+      config.sourceChanged.connect(notifyRoutingChange),
+      config.enabledChanged.connect(notifyRoutingChange),
+    ]);
+    if (emitChange) {
+      this.sidechainConfigChanged.emit();
+    }
   }
 
   // ─── Latency Compensation ────────────────────────────────────────────────
@@ -1464,7 +1495,7 @@ export class Session {
     if (snapshot.sidechainConfigs) {
       for (const scData of snapshot.sidechainConfigs) {
         const config = SidechainConfig.fromJSON(scData);
-        session._sidechainConfigs.set(config.id, config);
+        session.registerSidechainConfig(config, false);
       }
     }
 

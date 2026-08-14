@@ -86,6 +86,18 @@ export { LatencyCompensator } from "./audio/engine/LatencyCompensator";
 export { SidechainRouter } from "./audio/engine/SidechainRouter";
 export { RoutingGraph } from "./audio/engine/RoutingGraph";
 export type { GraphNode, FeedbackLoop } from "./audio/engine/RoutingGraph";
+export {
+  createRoutingSnapshot,
+  getProcessorRuntimeType,
+  ROUTING_SNAPSHOT_SCHEMA_VERSION,
+} from "./audio/engine/RoutingSnapshot";
+export type {
+  ProcessorRoutingSnapshot,
+  RoutingEdgeSnapshot,
+  RoutingNodeSnapshot,
+  RoutingNodeType,
+  RoutingSnapshot,
+} from "./audio/engine/RoutingSnapshot";
 export { PunchRecordManager } from "./audio/engine/PunchRecordManager";
 export type { PunchState } from "./audio/engine/PunchRecordManager";
 export { MultiTrackRecorder } from "./audio/engine/MultiTrackRecorder";
