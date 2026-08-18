@@ -199,11 +199,15 @@ engine.setBackend(new DifferentBackend());
 Implement this interface to connect @daw-engine/core to any audio system.
 
 ```typescript
-import { AudioProvider } from "@daw-engine/core";
+import { AudioProvider, RoutingSnapshot } from "@daw-engine/core";
 
 class WebAudioBackend implements AudioProvider {
   async initialize(): Promise<void> {
     /* ... */
+  }
+
+  applyRoutingSnapshot(snapshot: RoutingSnapshot): void {
+    // Replace the runtime graph atomically. Do not retain mutable Session objects.
   }
 
   // Transport

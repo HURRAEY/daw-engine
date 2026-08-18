@@ -1,5 +1,4 @@
 import { Signal } from "../../lib/Signal";
-import { TrackId } from "../../domain/types";
 
 /**
  * RoutingGraph represents the DAW's signal flow as a directed graph.
