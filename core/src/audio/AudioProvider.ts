@@ -3,10 +3,14 @@ import { Source } from "../domain/Source";
 import { RegionDTO, MidiRegionDTO } from "./dto";
 import { MeterData } from "../domain/MeterData";
 import { AutomationPoint } from "../automation/types";
+import type { RoutingSnapshot } from "./engine/RoutingSnapshot";
 
 export interface AudioProvider {
   // Initialization
   initialize(): Promise<void>;
+
+  // Session의 가변 객체 대신 동결된 실행 구조만 audio runtime에 전달한다.
+  applyRoutingSnapshot(snapshot: RoutingSnapshot): void;
 
   // Transport Control
   start(): void;
