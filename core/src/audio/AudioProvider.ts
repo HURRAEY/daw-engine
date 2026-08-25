@@ -14,6 +14,11 @@ export interface AudioProvider {
 
   // Transport Control
   start(): void;
+  /**
+   * Declick으로 출력을 무음까지 낮춘 뒤 transport를 정지한다.
+   * 다음 start()가 정상 음량으로 재생할 수 있는 상태에서 Promise를 완료해야 한다.
+   */
+  stopWithDeclick?(): Promise<void>;
   stop(): void;
   pause(): void;
   seek(time: number): void;

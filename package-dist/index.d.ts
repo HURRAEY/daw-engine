@@ -2847,6 +2847,8 @@ export declare class Session {
 	readonly vcaTrackRemoved: Signal<string>;
 	readonly scrubState: ScrubState;
 	private _sidechainConfigs;
+	private _sidechainSubscriptions;
+	readonly sidechainConfigChanged: Signal<void>;
 	/**
 	 * Emitted after {@link computeLatencyCompensation} recalculates the
 	 * per-route compensation delays for the session.
@@ -2892,6 +2894,8 @@ export declare class Session {
 	setTimeSignature(numerator: number, denominator: number): void;
 	startTransport(): void;
 	stopTransport(): void;
+	/** AudioProvider가 실제 정지를 끝낸 뒤 transport 전환을 완료한다. */
+	completeTransportStop(): void;
 	locateTransport(frame: FrameCount): void;
 	/**
 	 * Locate via the FSM with proper declick handling.
@@ -2990,6 +2994,8 @@ export declare class Session {
 	removeSidechainConfig(configId: string): void;
 	getSidechainConfig(configId: string): SidechainConfig | undefined;
 	getSidechainConfigsForTrack(trackId: TrackId): ReadonlyArray<SidechainConfig>;
+	get sidechainConfigs(): ReadonlyArray<SidechainConfig>;
+	private registerSidechainConfig;
 	/**
 	 * Recompute per-route latency compensation for the entire session.
 	 *
@@ -3535,9 +3541,54 @@ export interface MeterData {
 	/** Short-term LUFS (ITU-R BS.1770) */
 	lufs?: number;
 }
+export declare const ROUTING_SNAPSHOT_SCHEMA_VERSION: 1;
+export type RoutingNodeType = "audio" | "midi" | "aux" | "bus" | "master" | "folder" | "vca";
+export interface ProcessorRoutingSnapshot {
+	readonly id: string;
+	readonly type: string;
+	readonly index: number;
+	readonly active: boolean;
+	readonly latencySamples: number;
+	readonly tailFrames: number;
+}
+export interface RoutingNodeSnapshot {
+	readonly id: string;
+	readonly name: string;
+	readonly type: RoutingNodeType;
+	readonly inputId: string;
+	readonly outputId: string;
+	readonly compensationDelaySamples: number;
+	readonly processors: ReadonlyArray<ProcessorRoutingSnapshot>;
+}
+export interface RoutingEdgeSnapshot {
+	readonly sourceId: string;
+	readonly targetId: string;
+	readonly sourcePortId: string;
+	readonly targetPortId: string;
+	readonly type: "direct" | "send" | "sidechain";
+	readonly dataType: "audio" | "midi";
+	readonly sendBusId?: string;
+	readonly targetProcessorId?: string;
+}
+export interface RoutingSnapshot {
+	readonly schemaVersion: typeof ROUTING_SNAPSHOT_SCHEMA_VERSION;
+	readonly sessionId: string;
+	readonly nodes: ReadonlyArray<RoutingNodeSnapshot>;
+	readonly edges: ReadonlyArray<RoutingEdgeSnapshot>;
+	readonly processingOrder: ReadonlyArray<string>;
+	readonly feedbackPaths: ReadonlyArray<ReadonlyArray<string>>;
+}
+export declare function getProcessorRuntimeType(processor: Processor): string;
+export declare function createRoutingSnapshot(session: Session): RoutingSnapshot;
 export interface AudioProvider {
 	initialize(): Promise<void>;
+	applyRoutingSnapshot(snapshot: RoutingSnapshot): void;
 	start(): void;
+	/**
+	 * Declick으로 출력을 무음까지 낮춘 뒤 transport를 정지한다.
+	 * 다음 start()가 정상 음량으로 재생할 수 있는 상태에서 Promise를 완료해야 한다.
+	 */
+	stopWithDeclick?(): Promise<void>;
 	stop(): void;
 	pause(): void;
 	seek(time: number): void;
@@ -3685,6 +3736,9 @@ export declare class AudioEngine {
 	private backend;
 	session: Session;
 	private disposed;
+	private isBackendTransportRunning;
+	private transportStartPromise;
+	private transportStopPromise;
 	private midiInput;
 	private midiRecordingNotes;
 	private midiRecordedNotes;
@@ -3728,25 +3782,41 @@ export declare class AudioEngine {
 	 */
 	private static toRegionDTO;
 	updateRegion(trackId: string, _region: RegionDTO | Region): void;
+	private syncSessionToBackend;
+	private syncRoutingSnapshot;
+	private syncLoopRange;
+	private syncPunchRange;
+	private syncTrackToBackend;
+	private createBackendTrack;
+	private syncProcessorState;
+	private syncMasterProcessorState;
+	private syncIOConnections;
+	private syncSendBusToBackend;
+	private clearSessionFromBackend;
 	private setupSessionListeners;
+	private bindSendBusSignals;
 	private bindTrackRuntimeSignals;
 	private static toMidiRegionDTO;
 	private bindTrackSignals;
-	private getProcessorType;
 	private connectMasterProcessorSignals;
 	private connectProcessorSignals;
+	private bindProcessorSnapshotSignals;
 	private bindAutomationList;
 	initialize(): Promise<void>;
 	private preRollTargetFrame;
 	private preRollArmedTracks;
 	private preRollWasMetronomeEnabled;
 	start(): Promise<void>;
+	private startBackendWhenReady;
+	private clearTransportStartPromise;
 	private syncId;
 	private requestFrame;
 	private cancelFrame;
 	private startTransportSync;
 	private scheduleAutomations;
-	stop(): void;
+	stop(): Promise<void>;
+	private stopBackendAfterStart;
+	private clearTransportStopPromise;
 	pause(): void;
 	enablePunchRecording(enabled: boolean): void;
 	setMonitorWithEffects(trackId: string, enabled: boolean): void;
@@ -3804,6 +3874,7 @@ export declare class AudioEngine {
 	reverseRegionBuffer(trackId: string, regionId: string): Promise<void>;
 	loadSession(newSession: Session): void;
 	loadSessionFromSnapshot(snapshot: SessionSnapshot): void;
+	private stopImmediately;
 }
 /**
  * Offline Audio Exporter

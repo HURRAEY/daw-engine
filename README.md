@@ -167,6 +167,8 @@ DAW Engine does not directly implement audio playback or recording.
 
 The `AudioProvider` interface connects playback, recording, region scheduling, metering, and export features to your product's Web Audio or native audio implementation.
 
+Providers can implement `stopWithDeclick()` when transport stop must wait for an asynchronous fade-out. `AudioEngine` completes the stop state transition only after that promise settles; providers without the capability use immediate `stop()`.
+
 ## Documentation
 
 - [Core documentation](./core/README.md)

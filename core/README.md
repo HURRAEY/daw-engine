@@ -214,6 +214,9 @@ class WebAudioBackend implements AudioProvider {
   start(): void {
     /* ... */
   }
+  async stopWithDeclick(): Promise<void> {
+    // Fade the output to silence, stop the transport, and prepare the next start.
+  }
   stop(): void {
     /* ... */
   }
@@ -254,6 +257,10 @@ class WebAudioBackend implements AudioProvider {
   // ... and more (see full interface in source)
 }
 ```
+
+`stopWithDeclick()` is optional. When provided, `AudioEngine.stop()` keeps the
+transport in `DECLICK_TO_STOP` until the returned promise settles. Providers
+without this capability continue to use the immediate `stop()` fallback.
 
 **Included backend examples (in the daw-engine app, not in this package):**
 

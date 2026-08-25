@@ -61,7 +61,7 @@ export class TransportHandler implements CommandHandler {
         return { success: true, message: "Playback paused" };
 
       case CommandType.STOP:
-        audioEngine.stop();
+        await audioEngine.stop();
         return { success: true, message: "Playback stopped" };
 
       case CommandType.START_RECORDING:

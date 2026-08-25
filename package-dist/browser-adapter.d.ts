@@ -319,96 +319,6 @@ export interface AutomationPoint {
 	value: number;
 	interpolation: InterpolationType;
 }
-export interface AudioProvider {
-	initialize(): Promise<void>;
-	start(): void;
-	stop(): void;
-	pause(): void;
-	seek(time: number): void;
-	createTrack(trackId: TrackId, name: string, inputId: string, outputId: string): void;
-	createAuxTrack(trackId: TrackId, name: string, inputId: string, outputId: string): void;
-	createBusTrack(trackId: TrackId, name: string, inputId: string, outputId: string): void;
-	deleteTrack(trackId: TrackId): void;
-	connectIO(sourceId: string, destId: string): void;
-	disconnectIO(sourceId: string, destId: string): void;
-	addProcessor(trackId: TrackId, processorId: ProcessorId, type: string, index: number): void;
-	removeProcessor(trackId: TrackId, processorId: ProcessorId): void;
-	setProcessorParameter(trackId: TrackId, processorId: ProcessorId, parameter: string, value: number): void;
-	setProcessorAutomation(trackId: TrackId, processorId: ProcessorId, parameter: string, events: ReadonlyArray<AutomationPoint>): void;
-	setTrackGain(trackId: string, gain: number): void;
-	setTrackPan(trackId: string, pan: number): void;
-	setMonitor(trackId: string, enabled: boolean): void;
-	setTrackMute(trackId: string, muted: boolean): void;
-	setTrackSolo(trackId: string, soloed: boolean): void;
-	setTrackSoloIsolate(trackId: string, isolate: boolean): void;
-	setTrackSoloSafe(trackId: string, safe: boolean): void;
-	setMonitorMode(trackId: string, mode: string): void;
-	scheduleRegion(trackId: TrackId, region: RegionDTO): void;
-	updateRegions(trackId: TrackId, regions: RegionDTO[]): void;
-	removeRegion(trackId: TrackId, regionId: string): void;
-	getMeterLevel(routeId: RouteId): number;
-	getMeterData(trackId: string): MeterData;
-	getMasterMeterData(): MeterData;
-	getAnalyserNode(trackId?: string): AnalyserNode | null;
-	getAudioBuffer(sourceId: string): Promise<AudioBuffer | null>;
-	addAudioBuffer(sourceId: string, buffer: AudioBuffer): void;
-	prepareRecording(trackId: TrackId): Promise<void>;
-	startRecording(trackId: TrackId): void;
-	stopRecording(trackId: TrackId): Promise<Blob>;
-	enablePunchRecording(enabled: boolean): void;
-	setPunchRange(startFrame: FrameCount, endFrame: FrameCount): void;
-	setRecordingMuted(trackId: TrackId, muted: boolean): void;
-	setMonitorWithEffects(trackId: TrackId, enabled: boolean): void;
-	getInputLatencyMs(): number;
-	getCurrentFrame(): FrameCount;
-	getCurrentTime(): number;
-	setTempo(bpm: number): void;
-	cacheBlob(url: string, blob: Blob): Promise<void>;
-	enableMetronome(enabled: boolean): void | Promise<void>;
-	setMetronomeVolume(volume: number): void;
-	addSource(source: Source): Promise<void>;
-	getEngineType(): "Worklet" | "ToneFallback";
-	exportAudio(startFrame: FrameCount, endFrame: FrameCount, sampleRate: number, trackIds?: TrackId[]): Promise<AudioBuffer>;
-	renderRegionsToBuffer(trackId: TrackId, regionIds: string[]): Promise<AudioBuffer>;
-	setMasterGain(gain: number): void;
-	addMasterProcessor(processorId: ProcessorId, type: string, index: number): void;
-	removeMasterProcessor(processorId: ProcessorId): void;
-	setMasterProcessorParameter(processorId: ProcessorId, parameter: string, value: number): void;
-	registerMasterIO(inputId: string, outputId: string): void;
-	addSendBus(sendBusId: string, sourceTrackId: TrackId, destId: string, level: number, preFader: boolean): void;
-	removeSendBus(sendBusId: string): void;
-	setSendBusLevel(sendBusId: string, level: number): void;
-	setSendBusPreFader(sendBusId: string, preFader: boolean): void;
-	setSendBusActive(sendBusId: string, active: boolean): void;
-	auditionRegion(trackId: TrackId, regionId: string): void;
-	stopAudition(): void;
-	stripSilence(trackId: TrackId, regionId: string, thresholdDb: number, minLengthFrames: number): Promise<Array<{
-		start: number;
-		length: number;
-	}>>;
-	normalizeRegion(trackId: TrackId, regionId: string, targetDb: number): Promise<number>;
-	/** Create a MIDI track with a synth instrument */
-	createMidiTrack(trackId: TrackId, name: string, inputId: string, outputId: string): void;
-	/** Schedule a MIDI region for playback */
-	scheduleMidiRegion(trackId: TrackId, region: MidiRegionDTO): void;
-	/** Remove a scheduled MIDI region */
-	removeMidiRegion(trackId: TrackId, regionId: string): void;
-	/** Switch the synth instrument type for a MIDI track */
-	setMidiInstrument(trackId: TrackId, instrumentType: string): void;
-	/** Enable/disable native transport loop */
-	enableLoop(enabled: boolean): void;
-	/** Set the loop range on the transport */
-	setLoopRange(startTime: number, endTime: number): void;
-	/** Release all sounding MIDI notes immediately */
-	midiPanic(): void;
-	/** Get separate L/R meter data for the master bus */
-	getMasterStereoMeterData(): {
-		left: MeterData;
-		right: MeterData;
-	};
-	/** Reverse the audio buffer data for a region in-place */
-	reverseRegionBuffer(trackId: TrackId, regionId: string): Promise<void>;
-}
 declare enum AutomationMode {
 	/** 오토메이션 무시, 수동 조작만 */
 	OFF = "off",
@@ -2840,6 +2750,8 @@ export declare class Session {
 	readonly vcaTrackRemoved: Signal<string>;
 	readonly scrubState: ScrubState;
 	private _sidechainConfigs;
+	private _sidechainSubscriptions;
+	readonly sidechainConfigChanged: Signal<void>;
 	/**
 	 * Emitted after {@link computeLatencyCompensation} recalculates the
 	 * per-route compensation delays for the session.
@@ -2885,6 +2797,8 @@ export declare class Session {
 	setTimeSignature(numerator: number, denominator: number): void;
 	startTransport(): void;
 	stopTransport(): void;
+	/** AudioProvider가 실제 정지를 끝낸 뒤 transport 전환을 완료한다. */
+	completeTransportStop(): void;
 	locateTransport(frame: FrameCount): void;
 	/**
 	 * Locate via the FSM with proper declick handling.
@@ -2983,6 +2897,8 @@ export declare class Session {
 	removeSidechainConfig(configId: string): void;
 	getSidechainConfig(configId: string): SidechainConfig | undefined;
 	getSidechainConfigsForTrack(trackId: TrackId): ReadonlyArray<SidechainConfig>;
+	get sidechainConfigs(): ReadonlyArray<SidechainConfig>;
+	private registerSidechainConfig;
 	/**
 	 * Recompute per-route latency compensation for the entire session.
 	 *
@@ -3126,6 +3042,139 @@ export interface TakeLaneSnapshot {
 	trackId: string;
 	takes: TakeSnapshot[];
 }
+declare const ROUTING_SNAPSHOT_SCHEMA_VERSION: 1;
+export type RoutingNodeType = "audio" | "midi" | "aux" | "bus" | "master" | "folder" | "vca";
+export interface ProcessorRoutingSnapshot {
+	readonly id: string;
+	readonly type: string;
+	readonly index: number;
+	readonly active: boolean;
+	readonly latencySamples: number;
+	readonly tailFrames: number;
+}
+export interface RoutingNodeSnapshot {
+	readonly id: string;
+	readonly name: string;
+	readonly type: RoutingNodeType;
+	readonly inputId: string;
+	readonly outputId: string;
+	readonly compensationDelaySamples: number;
+	readonly processors: ReadonlyArray<ProcessorRoutingSnapshot>;
+}
+export interface RoutingEdgeSnapshot {
+	readonly sourceId: string;
+	readonly targetId: string;
+	readonly sourcePortId: string;
+	readonly targetPortId: string;
+	readonly type: "direct" | "send" | "sidechain";
+	readonly dataType: "audio" | "midi";
+	readonly sendBusId?: string;
+	readonly targetProcessorId?: string;
+}
+export interface RoutingSnapshot {
+	readonly schemaVersion: typeof ROUTING_SNAPSHOT_SCHEMA_VERSION;
+	readonly sessionId: string;
+	readonly nodes: ReadonlyArray<RoutingNodeSnapshot>;
+	readonly edges: ReadonlyArray<RoutingEdgeSnapshot>;
+	readonly processingOrder: ReadonlyArray<string>;
+	readonly feedbackPaths: ReadonlyArray<ReadonlyArray<string>>;
+}
+export interface AudioProvider {
+	initialize(): Promise<void>;
+	applyRoutingSnapshot(snapshot: RoutingSnapshot): void;
+	start(): void;
+	/**
+	 * Declick으로 출력을 무음까지 낮춘 뒤 transport를 정지한다.
+	 * 다음 start()가 정상 음량으로 재생할 수 있는 상태에서 Promise를 완료해야 한다.
+	 */
+	stopWithDeclick?(): Promise<void>;
+	stop(): void;
+	pause(): void;
+	seek(time: number): void;
+	createTrack(trackId: TrackId, name: string, inputId: string, outputId: string): void;
+	createAuxTrack(trackId: TrackId, name: string, inputId: string, outputId: string): void;
+	createBusTrack(trackId: TrackId, name: string, inputId: string, outputId: string): void;
+	deleteTrack(trackId: TrackId): void;
+	connectIO(sourceId: string, destId: string): void;
+	disconnectIO(sourceId: string, destId: string): void;
+	addProcessor(trackId: TrackId, processorId: ProcessorId, type: string, index: number): void;
+	removeProcessor(trackId: TrackId, processorId: ProcessorId): void;
+	setProcessorParameter(trackId: TrackId, processorId: ProcessorId, parameter: string, value: number): void;
+	setProcessorAutomation(trackId: TrackId, processorId: ProcessorId, parameter: string, events: ReadonlyArray<AutomationPoint>): void;
+	setTrackGain(trackId: string, gain: number): void;
+	setTrackPan(trackId: string, pan: number): void;
+	setMonitor(trackId: string, enabled: boolean): void;
+	setTrackMute(trackId: string, muted: boolean): void;
+	setTrackSolo(trackId: string, soloed: boolean): void;
+	setTrackSoloIsolate(trackId: string, isolate: boolean): void;
+	setTrackSoloSafe(trackId: string, safe: boolean): void;
+	setMonitorMode(trackId: string, mode: string): void;
+	scheduleRegion(trackId: TrackId, region: RegionDTO): void;
+	updateRegions(trackId: TrackId, regions: RegionDTO[]): void;
+	removeRegion(trackId: TrackId, regionId: string): void;
+	getMeterLevel(routeId: RouteId): number;
+	getMeterData(trackId: string): MeterData;
+	getMasterMeterData(): MeterData;
+	getAnalyserNode(trackId?: string): AnalyserNode | null;
+	getAudioBuffer(sourceId: string): Promise<AudioBuffer | null>;
+	addAudioBuffer(sourceId: string, buffer: AudioBuffer): void;
+	prepareRecording(trackId: TrackId): Promise<void>;
+	startRecording(trackId: TrackId): void;
+	stopRecording(trackId: TrackId): Promise<Blob>;
+	enablePunchRecording(enabled: boolean): void;
+	setPunchRange(startFrame: FrameCount, endFrame: FrameCount): void;
+	setRecordingMuted(trackId: TrackId, muted: boolean): void;
+	setMonitorWithEffects(trackId: TrackId, enabled: boolean): void;
+	getInputLatencyMs(): number;
+	getCurrentFrame(): FrameCount;
+	getCurrentTime(): number;
+	setTempo(bpm: number): void;
+	cacheBlob(url: string, blob: Blob): Promise<void>;
+	enableMetronome(enabled: boolean): void | Promise<void>;
+	setMetronomeVolume(volume: number): void;
+	addSource(source: Source): Promise<void>;
+	getEngineType(): "Worklet" | "ToneFallback";
+	exportAudio(startFrame: FrameCount, endFrame: FrameCount, sampleRate: number, trackIds?: TrackId[]): Promise<AudioBuffer>;
+	renderRegionsToBuffer(trackId: TrackId, regionIds: string[]): Promise<AudioBuffer>;
+	setMasterGain(gain: number): void;
+	addMasterProcessor(processorId: ProcessorId, type: string, index: number): void;
+	removeMasterProcessor(processorId: ProcessorId): void;
+	setMasterProcessorParameter(processorId: ProcessorId, parameter: string, value: number): void;
+	registerMasterIO(inputId: string, outputId: string): void;
+	addSendBus(sendBusId: string, sourceTrackId: TrackId, destId: string, level: number, preFader: boolean): void;
+	removeSendBus(sendBusId: string): void;
+	setSendBusLevel(sendBusId: string, level: number): void;
+	setSendBusPreFader(sendBusId: string, preFader: boolean): void;
+	setSendBusActive(sendBusId: string, active: boolean): void;
+	auditionRegion(trackId: TrackId, regionId: string): void;
+	stopAudition(): void;
+	stripSilence(trackId: TrackId, regionId: string, thresholdDb: number, minLengthFrames: number): Promise<Array<{
+		start: number;
+		length: number;
+	}>>;
+	normalizeRegion(trackId: TrackId, regionId: string, targetDb: number): Promise<number>;
+	/** Create a MIDI track with a synth instrument */
+	createMidiTrack(trackId: TrackId, name: string, inputId: string, outputId: string): void;
+	/** Schedule a MIDI region for playback */
+	scheduleMidiRegion(trackId: TrackId, region: MidiRegionDTO): void;
+	/** Remove a scheduled MIDI region */
+	removeMidiRegion(trackId: TrackId, regionId: string): void;
+	/** Switch the synth instrument type for a MIDI track */
+	setMidiInstrument(trackId: TrackId, instrumentType: string): void;
+	/** Enable/disable native transport loop */
+	enableLoop(enabled: boolean): void;
+	/** Set the loop range on the transport */
+	setLoopRange(startTime: number, endTime: number): void;
+	/** Release all sounding MIDI notes immediately */
+	midiPanic(): void;
+	/** Get separate L/R meter data for the master bus */
+	getMasterStereoMeterData(): {
+		left: MeterData;
+		right: MeterData;
+	};
+	/** Reverse the audio buffer data for a region in-place */
+	reverseRegionBuffer(trackId: TrackId, regionId: string): Promise<void>;
+}
 export interface MidiNoteOnEvent {
 	pitch: number;
 	velocity: number;
@@ -3186,6 +3235,9 @@ export declare class AudioEngine {
 	private backend;
 	session: Session;
 	private disposed;
+	private isBackendTransportRunning;
+	private transportStartPromise;
+	private transportStopPromise;
 	private midiInput;
 	private midiRecordingNotes;
 	private midiRecordedNotes;
@@ -3229,25 +3281,41 @@ export declare class AudioEngine {
 	 */
 	private static toRegionDTO;
 	updateRegion(trackId: string, _region: RegionDTO | Region): void;
+	private syncSessionToBackend;
+	private syncRoutingSnapshot;
+	private syncLoopRange;
+	private syncPunchRange;
+	private syncTrackToBackend;
+	private createBackendTrack;
+	private syncProcessorState;
+	private syncMasterProcessorState;
+	private syncIOConnections;
+	private syncSendBusToBackend;
+	private clearSessionFromBackend;
 	private setupSessionListeners;
+	private bindSendBusSignals;
 	private bindTrackRuntimeSignals;
 	private static toMidiRegionDTO;
 	private bindTrackSignals;
-	private getProcessorType;
 	private connectMasterProcessorSignals;
 	private connectProcessorSignals;
+	private bindProcessorSnapshotSignals;
 	private bindAutomationList;
 	initialize(): Promise<void>;
 	private preRollTargetFrame;
 	private preRollArmedTracks;
 	private preRollWasMetronomeEnabled;
 	start(): Promise<void>;
+	private startBackendWhenReady;
+	private clearTransportStartPromise;
 	private syncId;
 	private requestFrame;
 	private cancelFrame;
 	private startTransportSync;
 	private scheduleAutomations;
-	stop(): void;
+	stop(): Promise<void>;
+	private stopBackendAfterStart;
+	private clearTransportStopPromise;
 	pause(): void;
 	enablePunchRecording(enabled: boolean): void;
 	setMonitorWithEffects(trackId: string, enabled: boolean): void;
@@ -3305,6 +3373,7 @@ export declare class AudioEngine {
 	reverseRegionBuffer(trackId: string, regionId: string): Promise<void>;
 	loadSession(newSession: Session): void;
 	loadSessionFromSnapshot(snapshot: SessionSnapshot): void;
+	private stopImmediately;
 }
 
 export {};
