@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Region } from "../domain/Region";
 import { Session } from "../domain/Session";
+import { MotionState } from "../domain/TransportFSM";
 import { AudioEngine } from "./AudioEngine";
 import type { AudioProvider } from "./AudioProvider";
 
@@ -11,20 +12,39 @@ interface AudioProviderStub {
 
 function createAudioProviderStub(): AudioProviderStub {
   const methods = new Map<PropertyKey, ReturnType<typeof vi.fn>>();
+  const getOrCreateMethod = (
+    property: PropertyKey,
+  ): ReturnType<typeof vi.fn> => {
+    const existingMethod = methods.get(property);
+    if (existingMethod) return existingMethod;
+
+    const method = vi.fn();
+    methods.set(property, method);
+    return method;
+  };
   const provider = new Proxy({} as AudioProvider, {
     get: (_target, property) => {
-      const existingMethod = methods.get(property);
-      if (existingMethod) return existingMethod;
-
-      const method = vi.fn();
-      methods.set(property, method);
-      return method;
+      if (property === "stopWithDeclick" && !methods.has(property)) {
+        return undefined;
+      }
+      return getOrCreateMethod(property);
     },
   });
   return {
     provider,
-    getMethod: (methodName) => provider[methodName] as ReturnType<typeof vi.fn>,
+    getMethod: (methodName) => getOrCreateMethod(methodName),
   };
+}
+
+function createDeferred(): {
+  readonly promise: Promise<void>;
+  resolve: () => void;
+} {
+  let resolve = (): void => undefined;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 }
 
 describe("AudioEngine lifecycle", () => {
@@ -219,6 +239,93 @@ describe("AudioEngine lifecycle", () => {
         type: "sidechain",
       }),
     );
+    engine.dispose();
+  });
+});
+
+describe("AudioEngine transport declick", () => {
+  it("starts the backend when the session is rolling before engine start", async () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    engine.session.startTransport();
+
+    await engine.start();
+
+    expect(providerStub.getMethod("start")).toHaveBeenCalledTimes(1);
+    engine.dispose();
+  });
+
+  it("completes the stop transition after the provider declick finishes", async () => {
+    const providerStub = createAudioProviderStub();
+    const declick = createDeferred();
+    providerStub.getMethod("stopWithDeclick").mockReturnValue(declick.promise);
+    const engine = AudioEngine.create(providerStub.provider);
+    await engine.start();
+    engine.session.locateTransport(44_100);
+
+    const stopPromise = engine.stop();
+
+    expect(engine.session.transportFSM.motionState).toBe(
+      MotionState.DECLICK_TO_STOP,
+    );
+    expect(engine.session.transportFrame).toBe(44_100);
+    expect(providerStub.getMethod("stop")).not.toHaveBeenCalled();
+
+    declick.resolve();
+    await stopPromise;
+
+    expect(engine.session.transportFSM.motionState).toBe(MotionState.STOPPED);
+    expect(engine.session.transportFrame).toBe(0);
+    engine.dispose();
+  });
+
+  it("starts the backend after a play request deferred during declick", async () => {
+    const providerStub = createAudioProviderStub();
+    const declick = createDeferred();
+    providerStub.getMethod("stopWithDeclick").mockReturnValue(declick.promise);
+    const engine = AudioEngine.create(providerStub.provider);
+    await engine.start();
+    providerStub.getMethod("start").mockClear();
+
+    const stopPromise = engine.stop();
+    const startPromise = engine.start();
+
+    expect(engine.session.transportFSM.motionState).toBe(
+      MotionState.DECLICK_TO_STOP,
+    );
+    expect(providerStub.getMethod("start")).not.toHaveBeenCalled();
+
+    declick.resolve();
+    await Promise.all([stopPromise, startPromise]);
+
+    expect(engine.session.transportFSM.motionState).toBe(MotionState.ROLLING);
+    expect(providerStub.getMethod("start")).toHaveBeenCalledTimes(1);
+    engine.dispose();
+  });
+
+  it("uses immediate stop when the provider has no declick capability", async () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    await engine.start();
+
+    await engine.stop();
+
+    expect(providerStub.getMethod("stop")).toHaveBeenCalledTimes(1);
+    expect(engine.session.transportFSM.motionState).toBe(MotionState.STOPPED);
+    engine.dispose();
+  });
+
+  it("leaves the transport stopped when provider declick fails", async () => {
+    const providerStub = createAudioProviderStub();
+    providerStub
+      .getMethod("stopWithDeclick")
+      .mockRejectedValue(new Error("Declick failed"));
+    const engine = AudioEngine.create(providerStub.provider);
+    await engine.start();
+
+    await expect(engine.stop()).rejects.toThrow("Declick failed");
+
+    expect(engine.session.transportFSM.motionState).toBe(MotionState.STOPPED);
     engine.dispose();
   });
 });

@@ -6385,6 +6385,8 @@ var init_Session = __esm({
         this.scrubState = new ScrubState();
         // Sidechain Configs (Phase 12-3)
         this._sidechainConfigs = /* @__PURE__ */ new Map();
+        this._sidechainSubscriptions = /* @__PURE__ */ new Map();
+        this.sidechainConfigChanged = new Signal();
         // ── Latency Compensation ────────────────────────────────────────────────
         /**
          * Emitted after {@link computeLatencyCompensation} recalculates the
@@ -6655,10 +6657,12 @@ var init_Session = __esm({
       }
       stopTransport() {
         this.transportFSM.enqueue({ type: "StopTransport" });
-        this.transportFSM.enqueue({ type: "DeclickDone" });
-        this.isPlaying = false;
+      }
+      /** AudioProvider가 실제 정지를 끝낸 뒤 transport 전환을 완료한다. */
+      completeTransportStop() {
         this.transportFrame = 0;
         this.transportPositionChanged.emit(0);
+        this.transportFSM.enqueue({ type: "DeclickDone" });
       }
       locateTransport(frame) {
         this.transportFrame = frame;
@@ -7067,11 +7071,16 @@ var init_Session = __esm({
           targetTrackId,
           targetProcessorId
         );
-        this._sidechainConfigs.set(configId, config);
+        this.registerSidechainConfig(config, true);
         return config;
       }
       removeSidechainConfig(configId) {
-        this._sidechainConfigs.delete(configId);
+        if (!this._sidechainConfigs.delete(configId)) {
+          return;
+        }
+        this._sidechainSubscriptions.get(configId)?.forEach((subscription) => subscription.dispose());
+        this._sidechainSubscriptions.delete(configId);
+        this.sidechainConfigChanged.emit();
       }
       getSidechainConfig(configId) {
         return this._sidechainConfigs.get(configId);
@@ -7080,6 +7089,22 @@ var init_Session = __esm({
         return Array.from(this._sidechainConfigs.values()).filter(
           (c) => c.targetTrackId === trackId
         );
+      }
+      get sidechainConfigs() {
+        return Array.from(this._sidechainConfigs.values());
+      }
+      registerSidechainConfig(config, emitChange) {
+        this._sidechainConfigs.set(config.id, config);
+        const notifyRoutingChange = () => {
+          this.sidechainConfigChanged.emit();
+        };
+        this._sidechainSubscriptions.set(config.id, [
+          config.sourceChanged.connect(notifyRoutingChange),
+          config.enabledChanged.connect(notifyRoutingChange)
+        ]);
+        if (emitChange) {
+          this.sidechainConfigChanged.emit();
+        }
       }
       // ─── Latency Compensation ────────────────────────────────────────────────
       /**
@@ -7426,7 +7451,7 @@ var init_Session = __esm({
         if (snapshot.sidechainConfigs) {
           for (const scData of snapshot.sidechainConfigs) {
             const config = SidechainConfig.fromJSON(scData);
-            session._sidechainConfigs.set(config.id, config);
+            session.registerSidechainConfig(config, false);
           }
         }
         if (snapshot.takeLanes) {
@@ -24006,6 +24031,13 @@ var SendProcessor = class extends Processor {
   }
 };
 
+// core/src/audio/AudioEngine.ts
+init_PluginInsert();
+init_Logger();
+
+// core/src/audio/engine/RoutingSnapshot.ts
+init_GainProcessor();
+
 // core/src/processing/MeterProcessor.ts
 init_Processor();
 init_Signal();
@@ -24181,12 +24213,604 @@ var MeterProcessor = class extends Processor {
   }
 };
 
-// core/src/audio/AudioEngine.ts
+// core/src/audio/engine/RoutingSnapshot.ts
+init_Panner();
 init_PluginInsert();
-init_Logger();
+init_PolarityProcessor();
+
+// core/src/audio/engine/RoutingGraph.ts
+init_Signal();
+var RoutingGraph = class {
+  constructor() {
+    this._nodes = /* @__PURE__ */ new Map();
+    this.graphChanged = new Signal();
+    this.feedbackDetected = new Signal();
+  }
+  // ─── Node management ────────────────────────────────────────────────────
+  /**
+   * Add a node to the graph.
+   * If a node with the same ID already exists, it is updated in place.
+   */
+  addNode(id, name, type) {
+    const existing = this._nodes.get(id);
+    if (existing) {
+      existing.name = name;
+      existing.type = type;
+    } else {
+      this._nodes.set(id, {
+        id,
+        name,
+        type,
+        inputs: /* @__PURE__ */ new Set(),
+        outputs: /* @__PURE__ */ new Set(),
+        processed: false,
+        depth: 0
+      });
+    }
+    this.graphChanged.emit();
+  }
+  /**
+   * Remove a node and all edges that reference it.
+   */
+  removeNode(id) {
+    const node = this._nodes.get(id);
+    if (!node) return;
+    for (const outputId of node.outputs) {
+      const target = this._nodes.get(outputId);
+      if (target) target.inputs.delete(id);
+    }
+    for (const inputId of node.inputs) {
+      const source = this._nodes.get(inputId);
+      if (source) source.outputs.delete(id);
+    }
+    this._nodes.delete(id);
+    this.graphChanged.emit();
+  }
+  // ─── Edge management ────────────────────────────────────────────────────
+  /**
+   * Add a directed edge from one node to another.
+   * Both nodes must already exist in the graph.
+   */
+  addEdge(fromId, toId) {
+    const from = this._nodes.get(fromId);
+    const to = this._nodes.get(toId);
+    if (!from || !to) return;
+    from.outputs.add(toId);
+    to.inputs.add(fromId);
+    this.graphChanged.emit();
+  }
+  /**
+   * Remove a directed edge between two nodes.
+   */
+  removeEdge(fromId, toId) {
+    const from = this._nodes.get(fromId);
+    const to = this._nodes.get(toId);
+    if (!from || !to) return;
+    from.outputs.delete(toId);
+    to.inputs.delete(fromId);
+    this.graphChanged.emit();
+  }
+  // ─── Bulk rebuild ───────────────────────────────────────────────────────
+  /**
+   * Rebuild the entire graph from session state.
+   * Clears all existing nodes/edges and reconstructs from the provided
+   * track descriptors. Typically called after bulk routing changes.
+   */
+  rebuild(tracks) {
+    this._nodes.clear();
+    for (const track of tracks) {
+      this._nodes.set(track.id, {
+        id: track.id,
+        name: track.name,
+        type: track.type,
+        inputs: /* @__PURE__ */ new Set(),
+        outputs: /* @__PURE__ */ new Set(),
+        processed: false,
+        depth: 0
+      });
+    }
+    for (const track of tracks) {
+      const from = this._nodes.get(track.id);
+      if (!from) continue;
+      if (track.outputTarget && this._nodes.has(track.outputTarget)) {
+        from.outputs.add(track.outputTarget);
+        this._nodes.get(track.outputTarget).inputs.add(track.id);
+      }
+      for (const sendTarget of track.sendTargets) {
+        if (this._nodes.has(sendTarget)) {
+          from.outputs.add(sendTarget);
+          this._nodes.get(sendTarget).inputs.add(track.id);
+        }
+      }
+    }
+    this._computeDepths();
+    const loops = this.detectFeedback();
+    for (const loop of loops) {
+      this.feedbackDetected.emit(loop);
+    }
+    this.graphChanged.emit();
+  }
+  // ─── Topological sort (Kahn's algorithm) ────────────────────────────────
+  /**
+   * Compute a valid processing order using Kahn's algorithm for
+   * topological sorting. Leaf nodes (no inputs) are processed first,
+   * working upward to the master bus.
+   *
+   * If cycles exist, the returned order will be incomplete (nodes
+   * involved in cycles are omitted). Use detectFeedback() to identify
+   * those cycles.
+   *
+   * @returns An array of node IDs in processing order.
+   */
+  getProcessingOrder() {
+    const inDegree = /* @__PURE__ */ new Map();
+    for (const [id, node] of this._nodes) {
+      inDegree.set(id, node.inputs.size);
+    }
+    const queue = [];
+    for (const [id, degree] of inDegree) {
+      if (degree === 0) {
+        queue.push(id);
+      }
+    }
+    const order = [];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      order.push(current);
+      const node = this._nodes.get(current);
+      if (!node) continue;
+      for (const outputId of node.outputs) {
+        const deg = inDegree.get(outputId);
+        if (deg === void 0) continue;
+        const newDeg = deg - 1;
+        inDegree.set(outputId, newDeg);
+        if (newDeg === 0) {
+          queue.push(outputId);
+        }
+      }
+    }
+    return order;
+  }
+  // ─── Feedback detection (DFS cycle detection) ───────────────────────────
+  /**
+   * Detect all feedback loops (cycles) in the graph using DFS.
+   * Returns an array of FeedbackLoop descriptors, each containing the
+   * ordered path of node IDs that form the cycle.
+   */
+  detectFeedback() {
+    const loops = [];
+    const state = /* @__PURE__ */ new Map();
+    for (const id of this._nodes.keys()) {
+      state.set(id, "unvisited");
+    }
+    const pathStack = [];
+    const pathSet = /* @__PURE__ */ new Set();
+    const dfs = (nodeId) => {
+      state.set(nodeId, "visiting");
+      pathStack.push(nodeId);
+      pathSet.add(nodeId);
+      const node = this._nodes.get(nodeId);
+      if (node) {
+        for (const neighborId of node.outputs) {
+          const neighborState = state.get(neighborId);
+          if (neighborState === "visiting" && pathSet.has(neighborId)) {
+            const cycleStartIdx = pathStack.indexOf(neighborId);
+            const cyclePath = pathStack.slice(cycleStartIdx);
+            cyclePath.push(neighborId);
+            const nodeNames = cyclePath.map((id) => {
+              const n = this._nodes.get(id);
+              return n ? n.name : id;
+            });
+            loops.push({
+              path: cyclePath,
+              description: `Feedback loop: ${nodeNames.join(" -> ")}`
+            });
+          } else if (neighborState === "unvisited") {
+            dfs(neighborId);
+          }
+        }
+      }
+      pathStack.pop();
+      pathSet.delete(nodeId);
+      state.set(nodeId, "visited");
+    };
+    for (const id of this._nodes.keys()) {
+      if (state.get(id) === "unvisited") {
+        dfs(id);
+      }
+    }
+    return loops;
+  }
+  // ─── Reachability queries ───────────────────────────────────────────────
+  /**
+   * Check whether route A feeds (directly or indirectly) into route B.
+   * Uses BFS from A, following output edges, to determine reachability.
+   */
+  feeds(fromId, toId) {
+    if (fromId === toId) return false;
+    if (!this._nodes.has(fromId) || !this._nodes.has(toId)) return false;
+    const visited = /* @__PURE__ */ new Set();
+    const queue = [fromId];
+    visited.add(fromId);
+    while (queue.length > 0) {
+      const current = queue.shift();
+      const node = this._nodes.get(current);
+      if (!node) continue;
+      for (const outputId of node.outputs) {
+        if (outputId === toId) return true;
+        if (!visited.has(outputId)) {
+          visited.add(outputId);
+          queue.push(outputId);
+        }
+      }
+    }
+    return false;
+  }
+  /**
+   * Check whether route A directly feeds into route B (single hop).
+   */
+  directFeeds(fromId, toId) {
+    const from = this._nodes.get(fromId);
+    if (!from) return false;
+    return from.outputs.has(toId);
+  }
+  /**
+   * Get all routes that feed (directly or indirectly) into the given route.
+   * Traverses backward from the target, following input edges via BFS.
+   */
+  getUpstream(nodeId) {
+    if (!this._nodes.has(nodeId)) return [];
+    const visited = /* @__PURE__ */ new Set();
+    const queue = [nodeId];
+    visited.add(nodeId);
+    const upstream = [];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      const node = this._nodes.get(current);
+      if (!node) continue;
+      for (const inputId of node.inputs) {
+        if (!visited.has(inputId)) {
+          visited.add(inputId);
+          upstream.push(inputId);
+          queue.push(inputId);
+        }
+      }
+    }
+    return upstream;
+  }
+  /**
+   * Get all routes that the given route feeds (directly or indirectly) into.
+   * Traverses forward from the source, following output edges via BFS.
+   */
+  getDownstream(nodeId) {
+    if (!this._nodes.has(nodeId)) return [];
+    const visited = /* @__PURE__ */ new Set();
+    const queue = [nodeId];
+    visited.add(nodeId);
+    const downstream = [];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      const node = this._nodes.get(current);
+      if (!node) continue;
+      for (const outputId of node.outputs) {
+        if (!visited.has(outputId)) {
+          visited.add(outputId);
+          downstream.push(outputId);
+          queue.push(outputId);
+        }
+      }
+    }
+    return downstream;
+  }
+  // ─── Parallel processing groups ─────────────────────────────────────────
+  /**
+   * Find groups of nodes that can be processed in parallel.
+   * Nodes at the same depth in the topological ordering have no
+   * dependencies on each other and can safely run concurrently.
+   *
+   * Uses a BFS-based level assignment: leaf nodes (in-degree 0) are
+   * at level 0, their consumers at level 1, and so on. Nodes at the
+   * same level form a parallel group.
+   *
+   * @returns An array of groups, where each group is an array of node IDs
+   *          that can be processed simultaneously. Groups are returned in
+   *          processing order (group 0 first, then group 1, etc.).
+   */
+  getParallelGroups() {
+    const inDegree = /* @__PURE__ */ new Map();
+    const level = /* @__PURE__ */ new Map();
+    for (const [id, node] of this._nodes) {
+      inDegree.set(id, node.inputs.size);
+      level.set(id, 0);
+    }
+    const queue = [];
+    for (const [id, degree] of inDegree) {
+      if (degree === 0) {
+        queue.push(id);
+        level.set(id, 0);
+      }
+    }
+    const visited = /* @__PURE__ */ new Set();
+    let maxLevel = 0;
+    while (queue.length > 0) {
+      const current = queue.shift();
+      visited.add(current);
+      const currentLevel = level.get(current);
+      const node = this._nodes.get(current);
+      if (!node) continue;
+      for (const outputId of node.outputs) {
+        const newLevel = currentLevel + 1;
+        if (newLevel > (level.get(outputId) ?? 0)) {
+          level.set(outputId, newLevel);
+        }
+        if (newLevel > maxLevel) {
+          maxLevel = newLevel;
+        }
+        const deg = inDegree.get(outputId);
+        if (deg === void 0) continue;
+        const newDeg = deg - 1;
+        inDegree.set(outputId, newDeg);
+        if (newDeg === 0) {
+          queue.push(outputId);
+        }
+      }
+    }
+    const groups = [];
+    for (let i = 0; i <= maxLevel; i++) {
+      groups.push([]);
+    }
+    for (const [id, lvl] of level) {
+      if (visited.has(id)) {
+        groups[lvl].push(id);
+      }
+    }
+    return groups.filter((g) => g.length > 0);
+  }
+  // ─── Accessors ──────────────────────────────────────────────────────────
+  /**
+   * Get a single node by ID.
+   */
+  getNode(id) {
+    return this._nodes.get(id);
+  }
+  /**
+   * Get all nodes as a read-only array.
+   */
+  get nodes() {
+    return Array.from(this._nodes.values());
+  }
+  /**
+   * Clear all nodes and edges, resetting the graph to an empty state.
+   */
+  clear() {
+    this._nodes.clear();
+    this.graphChanged.emit();
+  }
+  // ─── Private helpers ────────────────────────────────────────────────────
+  /**
+   * Compute the depth of each node (longest path from any leaf to this node).
+   * Leaf nodes (no inputs) have depth 0. Used for parallel group assignment
+   * and rendering the graph visualization.
+   */
+  _computeDepths() {
+    for (const node of this._nodes.values()) {
+      node.depth = 0;
+    }
+    const order = this.getProcessingOrder();
+    for (const id of order) {
+      const node = this._nodes.get(id);
+      if (!node) continue;
+      for (const outputId of node.outputs) {
+        const target = this._nodes.get(outputId);
+        if (target) {
+          target.depth = Math.max(target.depth, node.depth + 1);
+        }
+      }
+    }
+  }
+};
+
+// core/src/audio/engine/RoutingSnapshot.ts
+var ROUTING_SNAPSHOT_SCHEMA_VERSION = 1;
+function getProcessorRuntimeType(processor) {
+  if (processor instanceof GainProcessor) {
+    return processor.name === "Trim" ? "Trim" : "Fader";
+  }
+  if (processor instanceof Panner || processor instanceof PanProcessor) {
+    return "Panner";
+  }
+  if (processor instanceof PolarityProcessor) {
+    return "Polarity";
+  }
+  if (processor instanceof SendProcessor) {
+    return "Send";
+  }
+  if (processor instanceof MeterProcessor) {
+    return "Meter";
+  }
+  if (processor instanceof PluginInsert) {
+    return `Insert: ${processor.plugin.name}`;
+  }
+  return "Unknown";
+}
+function createRoutingSnapshot(session) {
+  const graph = new RoutingGraph();
+  const nodes = createNodes(session);
+  nodes.forEach((node) => graph.addNode(node.id, node.name, node.type));
+  const edges = createEdges(session);
+  edges.forEach((edge) => graph.addEdge(edge.sourceId, edge.targetId));
+  const feedbackLoops = graph.detectFeedback();
+  const frozenNodes = Object.freeze(
+    nodes.map(
+      (node) => Object.freeze({
+        ...node,
+        processors: Object.freeze(
+          node.processors.map((processor) => Object.freeze(processor))
+        )
+      })
+    )
+  );
+  const frozenEdges = Object.freeze(edges.map((edge) => Object.freeze(edge)));
+  return Object.freeze({
+    schemaVersion: ROUTING_SNAPSHOT_SCHEMA_VERSION,
+    sessionId: session.id,
+    nodes: frozenNodes,
+    edges: frozenEdges,
+    processingOrder: Object.freeze(graph.getProcessingOrder()),
+    feedbackPaths: Object.freeze(
+      feedbackLoops.map((loop) => Object.freeze([...loop.path]))
+    )
+  });
+}
+function createNodes(session) {
+  return [
+    createRouteNode({
+      id: session.masterBus.id,
+      name: session.masterBus.name,
+      type: "master",
+      inputId: session.masterBus.input.id,
+      outputId: session.masterBus.output.id,
+      compensationDelaySamples: session.masterBus.compensationDelay,
+      processors: session.masterBus.processors
+    }),
+    ...session.tracks.map((track) => createTrackNode(track))
+  ];
+}
+function createTrackNode(track) {
+  return createRouteNode({
+    id: track.id,
+    name: track.name,
+    type: getRoutingNodeType(track.type),
+    inputId: track.route.input.id,
+    outputId: track.route.output.id,
+    compensationDelaySamples: track.route.compensationDelay,
+    processors: track.route.processors
+  });
+}
+function createRouteNode(source) {
+  return {
+    id: source.id,
+    name: source.name,
+    type: source.type,
+    inputId: source.inputId,
+    outputId: source.outputId,
+    compensationDelaySamples: source.compensationDelaySamples,
+    processors: source.processors.map((processor, index) => ({
+      id: processor.id,
+      type: getProcessorRuntimeType(processor),
+      index,
+      active: processor.active,
+      latencySamples: processor.getLatency(),
+      tailFrames: processor.getEffectiveTailLength()
+    }))
+  };
+}
+function createEdges(session) {
+  const routeByInputId = new Map(
+    [session.masterBus, ...session.tracks.map((track) => track.route)].map(
+      (route) => [route.input.id, route]
+    )
+  );
+  const nodeIdByRouteId = new Map([
+    [session.masterBus.id, session.masterBus.id],
+    ...session.tracks.map(
+      (track) => [track.route.id, track.id]
+    )
+  ]);
+  const edges = [];
+  session.tracks.forEach((track) => {
+    const explicitTargets = track.route.output.connections.map((inputId) => routeByInputId.get(inputId)).filter((route) => route !== void 0);
+    if (explicitTargets.length === 0) {
+      edges.push({
+        sourceId: track.id,
+        targetId: session.masterBus.id,
+        sourcePortId: track.route.output.id,
+        targetPortId: session.masterBus.input.id,
+        type: "direct",
+        dataType: track.type === "MIDI" /* MIDI */ ? "midi" : "audio"
+      });
+      return;
+    }
+    explicitTargets.forEach((targetRoute) => {
+      const targetId = nodeIdByRouteId.get(targetRoute.id);
+      if (!targetId) {
+        return;
+      }
+      edges.push({
+        sourceId: track.id,
+        targetId,
+        sourcePortId: track.route.output.id,
+        targetPortId: targetRoute.input.id,
+        type: "direct",
+        dataType: track.type === "MIDI" /* MIDI */ ? "midi" : "audio"
+      });
+    });
+  });
+  session.sendBuses.forEach((sendBus) => {
+    const targetRoute = routeByInputId.get(sendBus.destId);
+    const targetId = targetRoute ? nodeIdByRouteId.get(targetRoute.id) : void 0;
+    if (!targetId || !sendBus.active) {
+      return;
+    }
+    const sourceTrack = session.getTrack(sendBus.sourceTrackId);
+    if (!sourceTrack) {
+      return;
+    }
+    edges.push({
+      sourceId: sourceTrack.id,
+      targetId,
+      sourcePortId: sourceTrack.route.output.id,
+      targetPortId: sendBus.destId,
+      type: "send",
+      dataType: "audio",
+      sendBusId: sendBus.id
+    });
+  });
+  session.sidechainConfigs.forEach((sidechain) => {
+    if (!sidechain.enabled || !sidechain.sourceTrackId) {
+      return;
+    }
+    const sourceTrack = session.getTrack(sidechain.sourceTrackId);
+    const targetTrack = session.getTrack(sidechain.targetTrackId);
+    if (!sourceTrack || !targetTrack) {
+      return;
+    }
+    edges.push({
+      sourceId: sourceTrack.id,
+      targetId: targetTrack.id,
+      sourcePortId: sourceTrack.route.output.id,
+      targetPortId: targetTrack.route.input.id,
+      type: "sidechain",
+      dataType: "audio",
+      targetProcessorId: sidechain.targetProcessorId
+    });
+  });
+  return edges;
+}
+function getRoutingNodeType(trackType) {
+  switch (trackType) {
+    case "MIDI" /* MIDI */:
+      return "midi";
+    case "AUX" /* AUX */:
+      return "aux";
+    case "BUS" /* BUS */:
+      return "bus";
+    case "FOLDER" /* FOLDER */:
+      return "folder";
+    case "VCA" /* VCA */:
+      return "vca";
+    case "AUDIO" /* AUDIO */:
+      return "audio";
+  }
+}
+
+// core/src/audio/AudioEngine.ts
 var AudioEngine = class _AudioEngine {
   constructor(backend) {
     this.disposed = false;
+    this.isBackendTransportRunning = false;
+    this.transportStartPromise = null;
+    this.transportStopPromise = null;
     this.midiRecordingNotes = /* @__PURE__ */ new Map();
     this.midiRecordedNotes = [];
     this.midiNoteOnSub = null;
@@ -24205,6 +24829,7 @@ var AudioEngine = class _AudioEngine {
     this.session = new Session(crypto.randomUUID(), "Untitled Session");
     this.backend = backend;
     this.midiInput = MidiInput.getInstance();
+    this.syncSessionToBackend();
     this.setupSessionListeners();
   }
   static getInstance(backend) {
@@ -24260,6 +24885,8 @@ var AudioEngine = class _AudioEngine {
   }
   setBackend(backend) {
     this.backend = backend;
+    this.isBackendTransportRunning = false;
+    this.syncSessionToBackend();
   }
   /**
    * Pre-cache a decoded AudioBuffer so subsequent addSource/getAudioBuffer
@@ -24319,25 +24946,202 @@ var AudioEngine = class _AudioEngine {
       this.backend.updateRegions(trackId, regionsDTO);
     }
   }
+  syncSessionToBackend() {
+    const { masterBus } = this.session;
+    this.backend.registerMasterIO(masterBus.input.id, masterBus.output.id);
+    masterBus.processors.forEach((processor, index) => {
+      this.backend.addMasterProcessor(
+        processor.id,
+        getProcessorRuntimeType(processor),
+        index
+      );
+      this.syncMasterProcessorState(processor);
+    });
+    this.backend.setTempo(this.session.tempo);
+    void this.backend.enableMetronome(this.session.metronomeEnabled);
+    this.backend.setMetronomeVolume(this.session.metronomeVolume);
+    this.backend.enableLoop(this.session.loopEnabled);
+    this.syncLoopRange();
+    this.backend.enablePunchRecording(this.session.punchEnabled);
+    this.syncPunchRange();
+    this.backend.seek(this.session.transportFrame / this.session.sampleRate);
+    this.session.sources.forEach((source) => {
+      void this.backend.addSource(source);
+    });
+    this.session.tracks.forEach((track) => this.syncTrackToBackend(track));
+    this.session.sendBuses.forEach(
+      (sendBus) => this.syncSendBusToBackend(sendBus)
+    );
+    this.syncRoutingSnapshot();
+  }
+  syncRoutingSnapshot() {
+    this.backend.applyRoutingSnapshot(createRoutingSnapshot(this.session));
+  }
+  syncLoopRange() {
+    const range = this.session.getLoopRange();
+    if (!range) {
+      return;
+    }
+    this.backend.setLoopRange(
+      range.start / this.session.sampleRate,
+      range.end / this.session.sampleRate
+    );
+  }
+  syncPunchRange() {
+    const range = this.session.getPunchRange();
+    if (!range) {
+      return;
+    }
+    this.backend.setPunchRange(range.start, range.end);
+  }
+  syncTrackToBackend(track) {
+    this.createBackendTrack(track);
+    track.route.processors.forEach((processor, index) => {
+      this.backend.addProcessor(
+        track.id,
+        processor.id,
+        getProcessorRuntimeType(processor),
+        index
+      );
+      this.syncProcessorState(track.id, processor);
+    });
+    track.playlist.getRegions().forEach((region) => {
+      this.backend.scheduleRegion(track.id, _AudioEngine.toRegionDTO(region));
+    });
+    track.playlist.getMidiRegions().forEach((midiRegion) => {
+      this.backend.scheduleMidiRegion(
+        track.id,
+        _AudioEngine.toMidiRegionDTO(midiRegion)
+      );
+    });
+    this.backend.setMonitor(track.id, track.monitor);
+    this.backend.setTrackMute(track.id, track.mute);
+    this.backend.setTrackSolo(track.id, track.solo);
+    this.backend.setTrackSoloIsolate(track.id, track.soloIsolate);
+    this.backend.setTrackSoloSafe(track.id, track.soloSafe);
+    this.backend.setMonitorMode(track.id, track.monitorMode);
+    this.syncIOConnections(track);
+  }
+  createBackendTrack(track) {
+    const trackArguments = [
+      track.id,
+      track.name,
+      track.route.input.id,
+      track.route.output.id
+    ];
+    if (track.type === "AUX" /* AUX */) {
+      this.backend.createAuxTrack(...trackArguments);
+      return;
+    }
+    if (track.type === "BUS" /* BUS */) {
+      this.backend.createBusTrack(...trackArguments);
+      return;
+    }
+    if (track.type === "MIDI" /* MIDI */) {
+      this.backend.createMidiTrack(...trackArguments);
+      return;
+    }
+    this.backend.createTrack(...trackArguments);
+  }
+  syncProcessorState(trackId, processor) {
+    const setParameter = (parameter, value) => {
+      this.backend.setProcessorParameter(
+        trackId,
+        processor.id,
+        parameter,
+        value
+      );
+    };
+    if (processor instanceof GainProcessor) {
+      setParameter("gain", processor.gain);
+    } else if (processor instanceof Panner) {
+      setParameter("pan", processor.azimuth);
+      setParameter("width", processor.width);
+    } else if (processor instanceof PanProcessor) {
+      setParameter("pan", processor.pan);
+      setParameter("width", processor.width);
+    } else if (processor instanceof PolarityProcessor) {
+      setParameter("polarity", processor.inverted ? 1 : 0);
+    } else if (processor instanceof SendProcessor) {
+      setParameter("level", processor.level);
+      setParameter("preFader", processor.preFader ? 1 : 0);
+      setParameter("muted", processor.muted ? 1 : 0);
+    }
+    if (processor instanceof PluginInsert) {
+      processor.plugin.getParameters().forEach((parameter) => {
+        setParameter(parameter.id, parameter.value);
+      });
+    }
+    processor.automations.forEach((automation, parameter) => {
+      this.backend.setProcessorAutomation(
+        trackId,
+        processor.id,
+        parameter,
+        automation.getPoints()
+      );
+    });
+  }
+  syncMasterProcessorState(processor) {
+    if (processor instanceof GainProcessor) {
+      this.backend.setMasterGain(processor.gain);
+    }
+    if (processor instanceof PluginInsert) {
+      processor.plugin.getParameters().forEach((parameter) => {
+        this.backend.setMasterProcessorParameter(
+          processor.id,
+          parameter.id,
+          parameter.value
+        );
+      });
+    }
+  }
+  syncIOConnections(track) {
+    track.route.input.connections.forEach((destinationId) => {
+      this.backend.connectIO(track.route.input.id, destinationId);
+    });
+    track.route.output.connections.forEach((destinationId) => {
+      this.backend.connectIO(track.route.output.id, destinationId);
+    });
+  }
+  syncSendBusToBackend(sendBus) {
+    this.backend.addSendBus(
+      sendBus.id,
+      sendBus.sourceTrackId,
+      sendBus.destId,
+      sendBus.level,
+      sendBus.preFader
+    );
+    this.backend.setSendBusActive(sendBus.id, sendBus.active);
+  }
+  clearSessionFromBackend() {
+    this.session.sendBuses.forEach((sendBus) => {
+      this.backend.removeSendBus(sendBus.id);
+    });
+    this.session.tracks.forEach((track) => {
+      this.backend.deleteTrack(track.id);
+    });
+    this.session.masterBus.processors.forEach((processor) => {
+      this.backend.removeMasterProcessor(processor.id);
+    });
+  }
   setupSessionListeners() {
     const masterBus = this.session.masterBus;
-    this.backend.registerMasterIO(masterBus.input.id, masterBus.output.id);
-    masterBus.processors.forEach((proc, index) => {
-      const type = this.getProcessorType(proc);
-      this.backend.addMasterProcessor(proc.id, type, index);
-      this.connectMasterProcessorSignals(proc);
-    });
+    masterBus.processors.forEach(
+      (processor) => this.connectMasterProcessorSignals(processor)
+    );
     this.signalDisposers.push(
       masterBus.processorAdded.connect((proc) => {
         const index = masterBus.processors.indexOf(proc);
-        const type = this.getProcessorType(proc);
+        const type = getProcessorRuntimeType(proc);
         this.backend.addMasterProcessor(proc.id, type, index);
         this.connectMasterProcessorSignals(proc);
+        this.syncRoutingSnapshot();
       })
     );
     this.signalDisposers.push(
       masterBus.processorRemoved.connect((procId) => {
         this.backend.removeMasterProcessor(procId);
+        this.syncRoutingSnapshot();
       })
     );
     this.signalDisposers.push(
@@ -24367,43 +25171,16 @@ var AudioEngine = class _AudioEngine {
     );
     this.signalDisposers.push(
       this.session.trackAdded.connect((track) => {
-        if (track.type === "AUX" /* AUX */) {
-          this.backend.createAuxTrack(
-            track.id,
-            track.name,
-            track.route.input.id,
-            track.route.output.id
-          );
-        } else if (track.type === "BUS" /* BUS */) {
-          this.backend.createBusTrack(
-            track.id,
-            track.name,
-            track.route.input.id,
-            track.route.output.id
-          );
-        } else if (track.type === "MIDI" /* MIDI */) {
-          this.backend.createMidiTrack(
-            track.id,
-            track.name,
-            track.route.input.id,
-            track.route.output.id
-          );
-        } else {
-          this.backend.createTrack(
-            track.id,
-            track.name,
-            track.route.input.id,
-            track.route.output.id
-          );
-        }
+        this.createBackendTrack(track);
         const disposers = [];
         track.route.processors.forEach((proc, index) => {
-          const type = this.getProcessorType(proc);
+          const type = getProcessorRuntimeType(proc);
           this.backend.addProcessor(track.id, proc.id, type, index);
           this.connectProcessorSignals(track.id, proc, disposers);
         });
         this.bindTrackRuntimeSignals(track, disposers);
         this.trackDisposers.set(track.id, disposers);
+        this.syncRoutingSnapshot();
       })
     );
     this.signalDisposers.push(
@@ -24414,6 +25191,7 @@ var AudioEngine = class _AudioEngine {
           this.trackDisposers.delete(trackId);
         }
         this.backend.deleteTrack(trackId);
+        this.syncRoutingSnapshot();
       })
     );
     this.signalDisposers.push(
@@ -24445,30 +25223,11 @@ var AudioEngine = class _AudioEngine {
     );
     this.signalDisposers.push(
       this.session.sendBusAdded.connect((sendBus) => {
-        this.backend.addSendBus(
-          sendBus.id,
-          sendBus.sourceTrackId,
-          sendBus.destId,
-          sendBus.level,
-          sendBus.preFader
-        );
+        this.syncSendBusToBackend(sendBus);
         const disposers = [];
-        disposers.push(
-          sendBus.levelChanged.connect((levelDb) => {
-            this.backend.setSendBusLevel(sendBus.id, levelDb);
-          })
-        );
-        disposers.push(
-          sendBus.preFaderChanged.connect((preFader) => {
-            this.backend.setSendBusPreFader(sendBus.id, preFader);
-          })
-        );
-        disposers.push(
-          sendBus.activeChanged.connect((active) => {
-            this.backend.setSendBusActive(sendBus.id, active);
-          })
-        );
+        this.bindSendBusSignals(sendBus, disposers);
         this.sendBusDisposers.set(sendBus.id, disposers);
+        this.syncRoutingSnapshot();
       })
     );
     this.signalDisposers.push(
@@ -24479,6 +25238,12 @@ var AudioEngine = class _AudioEngine {
           this.sendBusDisposers.delete(sendBusId);
         }
         this.backend.removeSendBus(sendBusId);
+        this.syncRoutingSnapshot();
+      })
+    );
+    this.signalDisposers.push(
+      this.session.sidechainConfigChanged.connect(() => {
+        this.syncRoutingSnapshot();
       })
     );
     this.session.tracks.forEach((track) => {
@@ -24496,17 +25261,38 @@ var AudioEngine = class _AudioEngine {
         }
       }
     });
+    this.session.sendBuses.forEach((sendBus) => {
+      const disposers = [];
+      this.bindSendBusSignals(sendBus, disposers);
+      this.sendBusDisposers.set(sendBus.id, disposers);
+    });
+  }
+  bindSendBusSignals(sendBus, disposers) {
+    disposers.push(
+      sendBus.levelChanged.connect((levelDb) => {
+        this.backend.setSendBusLevel(sendBus.id, levelDb);
+      }),
+      sendBus.preFaderChanged.connect((preFader) => {
+        this.backend.setSendBusPreFader(sendBus.id, preFader);
+      }),
+      sendBus.activeChanged.connect((active) => {
+        this.backend.setSendBusActive(sendBus.id, active);
+        this.syncRoutingSnapshot();
+      })
+    );
   }
   bindTrackRuntimeSignals(track, disposers) {
     disposers.push(
       track.route.processorAdded.connect((processor) => {
         const index = track.route.processors.indexOf(processor);
-        const type = this.getProcessorType(processor);
+        const type = getProcessorRuntimeType(processor);
         this.backend.addProcessor(track.id, processor.id, type, index);
         this.connectProcessorSignals(track.id, processor, disposers);
+        this.syncRoutingSnapshot();
       }),
       track.route.processorRemoved.connect((processorId) => {
         this.backend.removeProcessor(track.id, processorId);
+        this.syncRoutingSnapshot();
       }),
       track.playlist.regionAdded.connect((region) => {
         this.backend.scheduleRegion(track.id, _AudioEngine.toRegionDTO(region));
@@ -24586,11 +25372,13 @@ var AudioEngine = class _AudioEngine {
         disposers.push(
           route.output.connected.connect((destId) => {
             this.backend.connectIO(route.output.id, destId);
+            this.syncRoutingSnapshot();
           })
         );
         disposers.push(
           route.output.disconnected.connect((destId) => {
             this.backend.disconnectIO(route.output.id, destId);
+            this.syncRoutingSnapshot();
           })
         );
       }
@@ -24598,29 +25386,20 @@ var AudioEngine = class _AudioEngine {
         disposers.push(
           route.input.connected.connect((destId) => {
             this.backend.connectIO(route.input.id, destId);
+            this.syncRoutingSnapshot();
           })
         );
         disposers.push(
           route.input.disconnected.connect((destId) => {
             this.backend.disconnectIO(route.input.id, destId);
+            this.syncRoutingSnapshot();
           })
         );
       }
     }
   }
-  getProcessorType(proc) {
-    if (proc instanceof GainProcessor) {
-      return proc.name === "Trim" ? "Trim" : "Fader";
-    }
-    if (proc instanceof Panner) return "Panner";
-    if (proc instanceof PanProcessor) return "Panner";
-    if (proc instanceof PolarityProcessor) return "Polarity";
-    if (proc instanceof SendProcessor) return "Send";
-    if (proc instanceof MeterProcessor) return "Meter";
-    if (proc instanceof PluginInsert) return `Insert: ${proc.plugin.name}`;
-    return "Unknown";
-  }
   connectMasterProcessorSignals(proc) {
+    this.bindProcessorSnapshotSignals(proc, this.signalDisposers);
     if (proc instanceof GainProcessor) {
       this.signalDisposers.push(
         proc.gainChanged.connect((val) => {
@@ -24639,6 +25418,7 @@ var AudioEngine = class _AudioEngine {
     }
   }
   connectProcessorSignals(trackId, proc, disposers) {
+    this.bindProcessorSnapshotSignals(proc, disposers);
     if (proc instanceof GainProcessor) {
       disposers.push(
         proc.gainChanged.connect((val) => {
@@ -24733,6 +25513,14 @@ var AudioEngine = class _AudioEngine {
       );
     }
   }
+  bindProcessorSnapshotSignals(processor, disposers) {
+    const syncSnapshot = () => this.syncRoutingSnapshot();
+    disposers.push(
+      processor.activeChanged.connect(syncSnapshot),
+      processor.latencyChanged.connect(syncSnapshot),
+      processor.tailLengthChanged.connect(syncSnapshot)
+    );
+  }
   bindAutomationList(trackId, procId, param, list, disposers) {
     if (list.changed) {
       disposers.push(
@@ -24755,12 +25543,51 @@ var AudioEngine = class _AudioEngine {
     await this.backend.initialize();
   }
   // Transport
-  async start() {
+  start() {
+    if (this.transportStartPromise) {
+      return this.transportStartPromise;
+    }
+    if (this.isBackendTransportRunning && this.session.transportFSM.isRolling()) {
+      return Promise.resolve();
+    }
+    this.session.startTransport();
+    const sessionAtRequest = this.session;
+    const pendingStop = this.transportStopPromise;
+    const operation = this.startBackendWhenReady(sessionAtRequest, pendingStop);
+    this.transportStartPromise = operation;
+    operation.then(
+      () => this.clearTransportStartPromise(operation),
+      () => this.clearTransportStartPromise(operation)
+    );
+    return operation;
+  }
+  async startBackendWhenReady(sessionAtRequest, pendingStop) {
+    if (pendingStop) {
+      try {
+        await pendingStop;
+      } catch (error) {
+        logger.warn(
+          "AudioEngine",
+          "Previous transport stop failed before restart",
+          error
+        );
+      }
+    }
+    if (this.disposed || this.session !== sessionAtRequest || !sessionAtRequest.transportFSM.isRolling()) {
+      return;
+    }
     this.scheduleAutomations();
     this.backend.setTempo(this.session.tempo);
-    this.session.startTransport();
     await this.backend.start();
-    this.startTransportSync();
+    this.isBackendTransportRunning = true;
+    if (this.session === sessionAtRequest && sessionAtRequest.transportFSM.isRolling()) {
+      this.startTransportSync();
+    }
+  }
+  clearTransportStartPromise(operation) {
+    if (this.transportStartPromise === operation) {
+      this.transportStartPromise = null;
+    }
   }
   requestFrame(cb) {
     if (typeof requestAnimationFrame !== "undefined") {
@@ -24852,12 +25679,60 @@ var AudioEngine = class _AudioEngine {
     });
   }
   stop() {
+    if (this.transportStopPromise) {
+      return this.transportStopPromise;
+    }
     this.session.stopTransport();
-    this.backend.stop();
+    const sessionAtRequest = this.session;
+    const backendAtRequest = this.backend;
+    const pendingStart = this.transportStartPromise;
+    const operation = this.stopBackendAfterStart({
+      session: sessionAtRequest,
+      backend: backendAtRequest,
+      pendingStart
+    });
+    this.transportStopPromise = operation;
+    operation.then(
+      () => this.clearTransportStopPromise(operation),
+      () => this.clearTransportStopPromise(operation)
+    );
+    return operation;
+  }
+  async stopBackendAfterStart({
+    session: sessionAtRequest,
+    backend: backendAtRequest,
+    pendingStart
+  }) {
+    if (pendingStart) {
+      try {
+        await pendingStart;
+      } catch {
+      }
+    }
+    try {
+      if (backendAtRequest.stopWithDeclick) {
+        await backendAtRequest.stopWithDeclick();
+      } else {
+        backendAtRequest.stop();
+      }
+    } finally {
+      if (this.backend === backendAtRequest) {
+        this.isBackendTransportRunning = false;
+      }
+      if (this.session === sessionAtRequest) {
+        sessionAtRequest.completeTransportStop();
+      }
+    }
+  }
+  clearTransportStopPromise(operation) {
+    if (this.transportStopPromise === operation) {
+      this.transportStopPromise = null;
+    }
   }
   pause() {
     this.session.isPlaying = false;
     this.backend.pause();
+    this.isBackendTransportRunning = false;
   }
   // Punch Recording
   enablePunchRecording(enabled) {
@@ -25110,7 +25985,7 @@ var AudioEngine = class _AudioEngine {
     const endFrame = this.backend.getCurrentFrame();
     this.stopMidiRecording();
     this.finalizeMidiRecording();
-    this.stop();
+    await this.stop();
     const armedAudioTracks = armedTracks.filter(
       (t) => t.type !== "MIDI" /* MIDI */
     );
@@ -25233,16 +26108,28 @@ var AudioEngine = class _AudioEngine {
   }
   // Session Management
   loadSession(newSession) {
-    this.stop();
+    this.stopImmediately();
+    this.clearSessionFromBackend();
     this.disconnectSessionSignals();
     this.session = newSession;
+    this.syncSessionToBackend();
     this.setupSessionListeners();
   }
   loadSessionFromSnapshot(snapshot) {
-    this.stop();
+    this.stopImmediately();
+    this.clearSessionFromBackend();
     this.disconnectSessionSignals();
     this.session = Session.fromJSON(snapshot);
+    this.syncSessionToBackend();
     this.setupSessionListeners();
+  }
+  stopImmediately() {
+    this.transportStartPromise = null;
+    this.transportStopPromise = null;
+    this.backend.stop();
+    this.isBackendTransportRunning = false;
+    this.session.stopTransport();
+    this.session.completeTransportStop();
   }
 };
 
@@ -27179,398 +28066,6 @@ function computeHPFCoefficients(frequency, sampleRate) {
     a2: (1 - sqrt2 * K + K2) * norm
   };
 }
-
-// core/src/audio/engine/RoutingGraph.ts
-init_Signal();
-var RoutingGraph = class {
-  constructor() {
-    this._nodes = /* @__PURE__ */ new Map();
-    this.graphChanged = new Signal();
-    this.feedbackDetected = new Signal();
-  }
-  // ─── Node management ────────────────────────────────────────────────────
-  /**
-   * Add a node to the graph.
-   * If a node with the same ID already exists, it is updated in place.
-   */
-  addNode(id, name, type) {
-    const existing = this._nodes.get(id);
-    if (existing) {
-      existing.name = name;
-      existing.type = type;
-    } else {
-      this._nodes.set(id, {
-        id,
-        name,
-        type,
-        inputs: /* @__PURE__ */ new Set(),
-        outputs: /* @__PURE__ */ new Set(),
-        processed: false,
-        depth: 0
-      });
-    }
-    this.graphChanged.emit();
-  }
-  /**
-   * Remove a node and all edges that reference it.
-   */
-  removeNode(id) {
-    const node = this._nodes.get(id);
-    if (!node) return;
-    for (const outputId of node.outputs) {
-      const target = this._nodes.get(outputId);
-      if (target) target.inputs.delete(id);
-    }
-    for (const inputId of node.inputs) {
-      const source = this._nodes.get(inputId);
-      if (source) source.outputs.delete(id);
-    }
-    this._nodes.delete(id);
-    this.graphChanged.emit();
-  }
-  // ─── Edge management ────────────────────────────────────────────────────
-  /**
-   * Add a directed edge from one node to another.
-   * Both nodes must already exist in the graph.
-   */
-  addEdge(fromId, toId) {
-    const from = this._nodes.get(fromId);
-    const to = this._nodes.get(toId);
-    if (!from || !to) return;
-    from.outputs.add(toId);
-    to.inputs.add(fromId);
-    this.graphChanged.emit();
-  }
-  /**
-   * Remove a directed edge between two nodes.
-   */
-  removeEdge(fromId, toId) {
-    const from = this._nodes.get(fromId);
-    const to = this._nodes.get(toId);
-    if (!from || !to) return;
-    from.outputs.delete(toId);
-    to.inputs.delete(fromId);
-    this.graphChanged.emit();
-  }
-  // ─── Bulk rebuild ───────────────────────────────────────────────────────
-  /**
-   * Rebuild the entire graph from session state.
-   * Clears all existing nodes/edges and reconstructs from the provided
-   * track descriptors. Typically called after bulk routing changes.
-   */
-  rebuild(tracks) {
-    this._nodes.clear();
-    for (const track of tracks) {
-      this._nodes.set(track.id, {
-        id: track.id,
-        name: track.name,
-        type: track.type,
-        inputs: /* @__PURE__ */ new Set(),
-        outputs: /* @__PURE__ */ new Set(),
-        processed: false,
-        depth: 0
-      });
-    }
-    for (const track of tracks) {
-      const from = this._nodes.get(track.id);
-      if (!from) continue;
-      if (track.outputTarget && this._nodes.has(track.outputTarget)) {
-        from.outputs.add(track.outputTarget);
-        this._nodes.get(track.outputTarget).inputs.add(track.id);
-      }
-      for (const sendTarget of track.sendTargets) {
-        if (this._nodes.has(sendTarget)) {
-          from.outputs.add(sendTarget);
-          this._nodes.get(sendTarget).inputs.add(track.id);
-        }
-      }
-    }
-    this._computeDepths();
-    const loops = this.detectFeedback();
-    for (const loop of loops) {
-      this.feedbackDetected.emit(loop);
-    }
-    this.graphChanged.emit();
-  }
-  // ─── Topological sort (Kahn's algorithm) ────────────────────────────────
-  /**
-   * Compute a valid processing order using Kahn's algorithm for
-   * topological sorting. Leaf nodes (no inputs) are processed first,
-   * working upward to the master bus.
-   *
-   * If cycles exist, the returned order will be incomplete (nodes
-   * involved in cycles are omitted). Use detectFeedback() to identify
-   * those cycles.
-   *
-   * @returns An array of node IDs in processing order.
-   */
-  getProcessingOrder() {
-    const inDegree = /* @__PURE__ */ new Map();
-    for (const [id, node] of this._nodes) {
-      inDegree.set(id, node.inputs.size);
-    }
-    const queue = [];
-    for (const [id, degree] of inDegree) {
-      if (degree === 0) {
-        queue.push(id);
-      }
-    }
-    const order = [];
-    while (queue.length > 0) {
-      const current = queue.shift();
-      order.push(current);
-      const node = this._nodes.get(current);
-      if (!node) continue;
-      for (const outputId of node.outputs) {
-        const deg = inDegree.get(outputId);
-        if (deg === void 0) continue;
-        const newDeg = deg - 1;
-        inDegree.set(outputId, newDeg);
-        if (newDeg === 0) {
-          queue.push(outputId);
-        }
-      }
-    }
-    return order;
-  }
-  // ─── Feedback detection (DFS cycle detection) ───────────────────────────
-  /**
-   * Detect all feedback loops (cycles) in the graph using DFS.
-   * Returns an array of FeedbackLoop descriptors, each containing the
-   * ordered path of node IDs that form the cycle.
-   */
-  detectFeedback() {
-    const loops = [];
-    const state = /* @__PURE__ */ new Map();
-    for (const id of this._nodes.keys()) {
-      state.set(id, "unvisited");
-    }
-    const pathStack = [];
-    const pathSet = /* @__PURE__ */ new Set();
-    const dfs = (nodeId) => {
-      state.set(nodeId, "visiting");
-      pathStack.push(nodeId);
-      pathSet.add(nodeId);
-      const node = this._nodes.get(nodeId);
-      if (node) {
-        for (const neighborId of node.outputs) {
-          const neighborState = state.get(neighborId);
-          if (neighborState === "visiting" && pathSet.has(neighborId)) {
-            const cycleStartIdx = pathStack.indexOf(neighborId);
-            const cyclePath = pathStack.slice(cycleStartIdx);
-            cyclePath.push(neighborId);
-            const nodeNames = cyclePath.map((id) => {
-              const n = this._nodes.get(id);
-              return n ? n.name : id;
-            });
-            loops.push({
-              path: cyclePath,
-              description: `Feedback loop: ${nodeNames.join(" -> ")}`
-            });
-          } else if (neighborState === "unvisited") {
-            dfs(neighborId);
-          }
-        }
-      }
-      pathStack.pop();
-      pathSet.delete(nodeId);
-      state.set(nodeId, "visited");
-    };
-    for (const id of this._nodes.keys()) {
-      if (state.get(id) === "unvisited") {
-        dfs(id);
-      }
-    }
-    return loops;
-  }
-  // ─── Reachability queries ───────────────────────────────────────────────
-  /**
-   * Check whether route A feeds (directly or indirectly) into route B.
-   * Uses BFS from A, following output edges, to determine reachability.
-   */
-  feeds(fromId, toId) {
-    if (fromId === toId) return false;
-    if (!this._nodes.has(fromId) || !this._nodes.has(toId)) return false;
-    const visited = /* @__PURE__ */ new Set();
-    const queue = [fromId];
-    visited.add(fromId);
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const node = this._nodes.get(current);
-      if (!node) continue;
-      for (const outputId of node.outputs) {
-        if (outputId === toId) return true;
-        if (!visited.has(outputId)) {
-          visited.add(outputId);
-          queue.push(outputId);
-        }
-      }
-    }
-    return false;
-  }
-  /**
-   * Check whether route A directly feeds into route B (single hop).
-   */
-  directFeeds(fromId, toId) {
-    const from = this._nodes.get(fromId);
-    if (!from) return false;
-    return from.outputs.has(toId);
-  }
-  /**
-   * Get all routes that feed (directly or indirectly) into the given route.
-   * Traverses backward from the target, following input edges via BFS.
-   */
-  getUpstream(nodeId) {
-    if (!this._nodes.has(nodeId)) return [];
-    const visited = /* @__PURE__ */ new Set();
-    const queue = [nodeId];
-    visited.add(nodeId);
-    const upstream = [];
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const node = this._nodes.get(current);
-      if (!node) continue;
-      for (const inputId of node.inputs) {
-        if (!visited.has(inputId)) {
-          visited.add(inputId);
-          upstream.push(inputId);
-          queue.push(inputId);
-        }
-      }
-    }
-    return upstream;
-  }
-  /**
-   * Get all routes that the given route feeds (directly or indirectly) into.
-   * Traverses forward from the source, following output edges via BFS.
-   */
-  getDownstream(nodeId) {
-    if (!this._nodes.has(nodeId)) return [];
-    const visited = /* @__PURE__ */ new Set();
-    const queue = [nodeId];
-    visited.add(nodeId);
-    const downstream = [];
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const node = this._nodes.get(current);
-      if (!node) continue;
-      for (const outputId of node.outputs) {
-        if (!visited.has(outputId)) {
-          visited.add(outputId);
-          downstream.push(outputId);
-          queue.push(outputId);
-        }
-      }
-    }
-    return downstream;
-  }
-  // ─── Parallel processing groups ─────────────────────────────────────────
-  /**
-   * Find groups of nodes that can be processed in parallel.
-   * Nodes at the same depth in the topological ordering have no
-   * dependencies on each other and can safely run concurrently.
-   *
-   * Uses a BFS-based level assignment: leaf nodes (in-degree 0) are
-   * at level 0, their consumers at level 1, and so on. Nodes at the
-   * same level form a parallel group.
-   *
-   * @returns An array of groups, where each group is an array of node IDs
-   *          that can be processed simultaneously. Groups are returned in
-   *          processing order (group 0 first, then group 1, etc.).
-   */
-  getParallelGroups() {
-    const inDegree = /* @__PURE__ */ new Map();
-    const level = /* @__PURE__ */ new Map();
-    for (const [id, node] of this._nodes) {
-      inDegree.set(id, node.inputs.size);
-      level.set(id, 0);
-    }
-    const queue = [];
-    for (const [id, degree] of inDegree) {
-      if (degree === 0) {
-        queue.push(id);
-        level.set(id, 0);
-      }
-    }
-    const visited = /* @__PURE__ */ new Set();
-    let maxLevel = 0;
-    while (queue.length > 0) {
-      const current = queue.shift();
-      visited.add(current);
-      const currentLevel = level.get(current);
-      const node = this._nodes.get(current);
-      if (!node) continue;
-      for (const outputId of node.outputs) {
-        const newLevel = currentLevel + 1;
-        if (newLevel > (level.get(outputId) ?? 0)) {
-          level.set(outputId, newLevel);
-        }
-        if (newLevel > maxLevel) {
-          maxLevel = newLevel;
-        }
-        const deg = inDegree.get(outputId);
-        if (deg === void 0) continue;
-        const newDeg = deg - 1;
-        inDegree.set(outputId, newDeg);
-        if (newDeg === 0) {
-          queue.push(outputId);
-        }
-      }
-    }
-    const groups = [];
-    for (let i = 0; i <= maxLevel; i++) {
-      groups.push([]);
-    }
-    for (const [id, lvl] of level) {
-      if (visited.has(id)) {
-        groups[lvl].push(id);
-      }
-    }
-    return groups.filter((g) => g.length > 0);
-  }
-  // ─── Accessors ──────────────────────────────────────────────────────────
-  /**
-   * Get a single node by ID.
-   */
-  getNode(id) {
-    return this._nodes.get(id);
-  }
-  /**
-   * Get all nodes as a read-only array.
-   */
-  get nodes() {
-    return Array.from(this._nodes.values());
-  }
-  /**
-   * Clear all nodes and edges, resetting the graph to an empty state.
-   */
-  clear() {
-    this._nodes.clear();
-    this.graphChanged.emit();
-  }
-  // ─── Private helpers ────────────────────────────────────────────────────
-  /**
-   * Compute the depth of each node (longest path from any leaf to this node).
-   * Leaf nodes (no inputs) have depth 0. Used for parallel group assignment
-   * and rendering the graph visualization.
-   */
-  _computeDepths() {
-    for (const node of this._nodes.values()) {
-      node.depth = 0;
-    }
-    const order = this.getProcessingOrder();
-    for (const id of order) {
-      const node = this._nodes.get(id);
-      if (!node) continue;
-      for (const outputId of node.outputs) {
-        const target = this._nodes.get(outputId);
-        if (target) {
-          target.depth = Math.max(target.depth, node.depth + 1);
-        }
-      }
-    }
-  }
-};
 
 // core/src/audio/engine/PunchRecordManager.ts
 init_Signal();
@@ -31132,7 +31627,7 @@ var TransportHandler = class {
         audioEngine.pause();
         return { success: true, message: "Playback paused" };
       case CommandType.STOP:
-        audioEngine.stop();
+        await audioEngine.stop();
         return { success: true, message: "Playback stopped" };
       case CommandType.START_RECORDING:
         await audioEngine.startRecording();
@@ -41200,6 +41695,7 @@ export {
   Processor,
   ProcessorNotFoundError,
   PunchRecordManager,
+  ROUTING_SNAPSHOT_SCHEMA_VERSION,
   Range,
   RangeNotFoundError,
   RecordMode,
@@ -41242,6 +41738,8 @@ export {
   VCATrack,
   ZoomFocus,
   computeFadeGain,
+  createRoutingSnapshot,
   formatClock,
+  getProcessorRuntimeType,
   moveRegionAndCreateTransaction
 };

@@ -513,12 +513,13 @@ export class Session {
 
   public stopTransport() {
     this.transportFSM.enqueue({ type: "StopTransport" });
-    // For rapid stop (no declick in domain layer), complete immediately.
-    // The audio backend handles its own declick ramp-down independently.
-    this.transportFSM.enqueue({ type: "DeclickDone" });
-    this.isPlaying = false;
+  }
+
+  /** AudioProvider가 실제 정지를 끝낸 뒤 transport 전환을 완료한다. */
+  public completeTransportStop() {
     this.transportFrame = 0;
     this.transportPositionChanged.emit(0);
+    this.transportFSM.enqueue({ type: "DeclickDone" });
   }
 
   public locateTransport(frame: FrameCount) {

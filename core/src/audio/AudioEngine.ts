@@ -31,11 +31,20 @@ import {
   getProcessorRuntimeType,
 } from "./engine/RoutingSnapshot";
 
+interface StopBackendRequest {
+  readonly session: Session;
+  readonly backend: AudioProvider;
+  readonly pendingStart: Promise<void> | null;
+}
+
 export class AudioEngine {
   private static instance: AudioEngine | undefined;
   private backend: AudioProvider;
   public session: Session;
   private disposed = false;
+  private isBackendTransportRunning = false;
+  private transportStartPromise: Promise<void> | null = null;
+  private transportStopPromise: Promise<void> | null = null;
 
   // MIDI Recording State
   private midiInput: MidiInput;
@@ -124,6 +133,7 @@ export class AudioEngine {
 
   public setBackend(backend: AudioProvider): void {
     this.backend = backend;
+    this.isBackendTransportRunning = false;
     this.syncSessionToBackend();
   }
 
@@ -901,12 +911,69 @@ export class AudioEngine {
   private preRollWasMetronomeEnabled = false;
 
   // Transport
-  public async start() {
+  public start(): Promise<void> {
+    if (this.transportStartPromise) {
+      return this.transportStartPromise;
+    }
+    if (
+      this.isBackendTransportRunning &&
+      this.session.transportFSM.isRolling()
+    ) {
+      return Promise.resolve();
+    }
+
+    this.session.startTransport();
+    const sessionAtRequest = this.session;
+    const pendingStop = this.transportStopPromise;
+    const operation = this.startBackendWhenReady(sessionAtRequest, pendingStop);
+    this.transportStartPromise = operation;
+    operation.then(
+      () => this.clearTransportStartPromise(operation),
+      () => this.clearTransportStartPromise(operation),
+    );
+    return operation;
+  }
+
+  private async startBackendWhenReady(
+    sessionAtRequest: Session,
+    pendingStop: Promise<void> | null,
+  ): Promise<void> {
+    if (pendingStop) {
+      try {
+        // Declick 중 입력된 재생은 backend 정지가 끝난 뒤 상태 머신의 재처리 결과를 따른다.
+        await pendingStop;
+      } catch (error) {
+        logger.warn(
+          "AudioEngine",
+          "Previous transport stop failed before restart",
+          error,
+        );
+      }
+    }
+    if (
+      this.disposed ||
+      this.session !== sessionAtRequest ||
+      !sessionAtRequest.transportFSM.isRolling()
+    ) {
+      return;
+    }
+
     this.scheduleAutomations();
     this.backend.setTempo(this.session.tempo);
-    this.session.startTransport();
     await this.backend.start();
-    this.startTransportSync();
+    this.isBackendTransportRunning = true;
+    if (
+      this.session === sessionAtRequest &&
+      sessionAtRequest.transportFSM.isRolling()
+    ) {
+      this.startTransportSync();
+    }
+  }
+
+  private clearTransportStartPromise(operation: Promise<void>): void {
+    if (this.transportStartPromise === operation) {
+      this.transportStartPromise = null;
+    }
   }
 
   private syncId: number | null = null;
@@ -1027,14 +1094,68 @@ export class AudioEngine {
     });
   }
 
-  public stop() {
+  public stop(): Promise<void> {
+    if (this.transportStopPromise) {
+      return this.transportStopPromise;
+    }
+
     this.session.stopTransport();
-    this.backend.stop();
+    const sessionAtRequest = this.session;
+    const backendAtRequest = this.backend;
+    const pendingStart = this.transportStartPromise;
+    const operation = this.stopBackendAfterStart({
+      session: sessionAtRequest,
+      backend: backendAtRequest,
+      pendingStart,
+    });
+    this.transportStopPromise = operation;
+    operation.then(
+      () => this.clearTransportStopPromise(operation),
+      () => this.clearTransportStopPromise(operation),
+    );
+    return operation;
+  }
+
+  private async stopBackendAfterStart({
+    session: sessionAtRequest,
+    backend: backendAtRequest,
+    pendingStart,
+  }: StopBackendRequest): Promise<void> {
+    if (pendingStart) {
+      try {
+        await pendingStart;
+      } catch {
+        // 재생 시작 실패와 관계없이 backend 정지와 FSM 완료 처리는 계속한다.
+      }
+    }
+
+    try {
+      if (backendAtRequest.stopWithDeclick) {
+        await backendAtRequest.stopWithDeclick();
+      } else {
+        // 기존 Provider는 동기 stop을 사용하고 Declick 전환을 즉시 완료한다.
+        backendAtRequest.stop();
+      }
+    } finally {
+      if (this.backend === backendAtRequest) {
+        this.isBackendTransportRunning = false;
+      }
+      if (this.session === sessionAtRequest) {
+        sessionAtRequest.completeTransportStop();
+      }
+    }
+  }
+
+  private clearTransportStopPromise(operation: Promise<void>): void {
+    if (this.transportStopPromise === operation) {
+      this.transportStopPromise = null;
+    }
   }
 
   public pause() {
     this.session.isPlaying = false;
     this.backend.pause();
+    this.isBackendTransportRunning = false;
   }
 
   // Punch Recording
@@ -1358,7 +1479,7 @@ export class AudioEngine {
     this.finalizeMidiRecording();
 
     // Stop Transport
-    this.stop();
+    await this.stop();
 
     // Stop all audio armed tracks and collect blobs
     const armedAudioTracks = armedTracks.filter(
@@ -1540,7 +1661,7 @@ export class AudioEngine {
 
   // Session Management
   public loadSession(newSession: Session): void {
-    this.stop();
+    this.stopImmediately();
     // 기존 backend graph를 제거해야 교체된 Session의 Track과 Processor만 남는다.
     this.clearSessionFromBackend();
     this.disconnectSessionSignals();
@@ -1550,11 +1671,20 @@ export class AudioEngine {
   }
 
   public loadSessionFromSnapshot(snapshot: SessionSnapshot): void {
-    this.stop();
+    this.stopImmediately();
     this.clearSessionFromBackend();
     this.disconnectSessionSignals();
     this.session = Session.fromJSON(snapshot);
     this.syncSessionToBackend();
     this.setupSessionListeners();
+  }
+
+  private stopImmediately(): void {
+    this.transportStartPromise = null;
+    this.transportStopPromise = null;
+    this.backend.stop();
+    this.isBackendTransportRunning = false;
+    this.session.stopTransport();
+    this.session.completeTransportStop();
   }
 }
