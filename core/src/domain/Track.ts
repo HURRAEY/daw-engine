@@ -90,6 +90,9 @@ export class Track {
   public readonly recordModeChanged = new Signal<RecordMode>();
   public readonly bounceProgressChanged = new Signal<number>();
   public readonly bounceCompleted = new Signal<{ sourceId: string }>();
+  public readonly nameChanged = new Signal<string>();
+  public readonly commentChanged = new Signal<string>();
+  public readonly parentTrackChanged = new Signal<TrackId | null>();
 
   constructor(id: TrackId, name: string, type: TrackType) {
     this.id = id;
@@ -103,9 +106,23 @@ export class Track {
   }
 
   public rename(newName: string) {
+    if (this.name === newName) return;
     this.name = newName;
     this.route.name = newName;
     this.playlist.name = newName;
+    this.nameChanged.emit(newName);
+  }
+
+  public setComment(comment: string): void {
+    if (this.comment === comment) return;
+    this.comment = comment;
+    this.commentChanged.emit(comment);
+  }
+
+  public setParentTrackId(parentTrackId: TrackId | null): void {
+    if (this.parentTrackId === parentTrackId) return;
+    this.parentTrackId = parentTrackId;
+    this.parentTrackChanged.emit(parentTrackId);
   }
 
   public setArmed(armed: boolean) {

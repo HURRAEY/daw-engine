@@ -193,6 +193,8 @@ export class Session {
 
   // Take Lanes (Phase 9-4)
   private _takeLanes: Map<string, TakeLane> = new Map();
+  public readonly takeLaneAdded = new Signal<TakeLane>();
+  public readonly takeLaneRemoved = new Signal<string>();
 
   // Track Group Linking (mute/solo/gain/color propagation)
   private _linkingService: TrackGroupLinkingService | null = null;
@@ -1011,7 +1013,7 @@ export class Session {
   public setTrackParent(trackId: TrackId, parentId: TrackId | null): void {
     const track = this.getTrack(trackId);
     if (track) {
-      track.parentTrackId = parentId;
+      track.setParentTrackId(parentId);
     }
   }
 
@@ -1095,6 +1097,7 @@ export class Session {
     this._sidechainSubscriptions.set(config.id, [
       config.sourceChanged.connect(notifyRoutingChange),
       config.enabledChanged.connect(notifyRoutingChange),
+      config.filterChanged.connect(notifyRoutingChange),
     ]);
     if (emitChange) {
       this.sidechainConfigChanged.emit();
@@ -1170,11 +1173,14 @@ export class Session {
     const laneId = id ?? crypto.randomUUID();
     const lane = new TakeLane(laneId, trackId);
     this._takeLanes.set(laneId, lane);
+    this.takeLaneAdded.emit(lane);
     return lane;
   }
 
   public removeTakeLane(laneId: string): void {
-    this._takeLanes.delete(laneId);
+    if (this._takeLanes.delete(laneId)) {
+      this.takeLaneRemoved.emit(laneId);
+    }
   }
 
   public getTakeLane(laneId: string): TakeLane | undefined {
@@ -1185,6 +1191,10 @@ export class Session {
     return Array.from(this._takeLanes.values()).filter(
       (l) => l.trackId === trackId,
     );
+  }
+
+  public get takeLanes(): ReadonlyArray<TakeLane> {
+    return Array.from(this._takeLanes.values());
   }
 
   // ─── CD Markers ─────────────────────────────────────────────────────────
@@ -1471,13 +1481,15 @@ export class Session {
         track.setMonitorMode(trackData.monitorMode as MonitorMode);
       if (trackData.trimGain !== undefined)
         track.setTrimGain(trackData.trimGain);
-      if (trackData.comment !== undefined) track.comment = trackData.comment;
+      if (trackData.comment !== undefined) {
+        track.setComment(trackData.comment);
+      }
       if (trackData.recordMode !== undefined) {
         track.setRecordMode(trackData.recordMode);
       }
       track.frozen = trackData.frozen ?? false;
       track.frozenSourceId = trackData.frozenSourceId ?? null;
-      track.parentTrackId = trackData.parentTrackId ?? null;
+      track.setParentTrackId(trackData.parentTrackId ?? null);
       track.groupId = trackData.groupId ?? null;
       track.isCollapsed = trackData.isCollapsed ?? false;
       if (trackData.alignStyle) {
@@ -1807,7 +1819,10 @@ export class Session {
     restored._sidechainConfigs.forEach((config) =>
       this.registerSidechainConfig(config, true),
     );
-    restored._takeLanes.forEach((lane) => this._takeLanes.set(lane.id, lane));
+    restored._takeLanes.forEach((lane) => {
+      this._takeLanes.set(lane.id, lane);
+      this.takeLaneAdded.emit(lane);
+    });
 
     this.tempoChanged.emit(this.tempo);
     this.timeSignatureChanged.emit(this.timeSignature);
@@ -1917,8 +1932,7 @@ export interface SourceSnapshot {
   xrunPositions?: number[];
   capturedFor?: string;
   analysisData?:
-    | (Omit<SourceAnalysisData, "transients"> & { transients?: number[] })
-    | null;
+    (Omit<SourceAnalysisData, "transients"> & { transients?: number[] }) | null;
 }
 
 export interface GridSettingsSnapshot {

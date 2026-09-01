@@ -173,3 +173,14 @@ export class ProcessorNotFoundError extends DAWError {
     this.name = "ProcessorNotFoundError";
   }
 }
+
+export class DuplicateProcessorIdError extends DAWError {
+  constructor(
+    public readonly routeId: string,
+    public readonly processorId: string,
+  ) {
+    super(`Processor ID already exists in route ${routeId}: ${processorId}`);
+    this.name = "DuplicateProcessorIdError";
+    Object.setPrototypeOf(this, DuplicateProcessorIdError.prototype);
+  }
+}
