@@ -48,6 +48,14 @@ function createDeferred(): {
 }
 
 describe("AudioEngine lifecycle", () => {
+  it("creates the default session with the intended name and generated id", () => {
+    const engine = AudioEngine.create(createAudioProviderStub().provider);
+
+    expect(engine.session.name).toBe("Untitled Session");
+    expect(engine.session.id).not.toBe("Untitled Session");
+    engine.dispose();
+  });
+
   it("creates isolated engines without sharing a session", () => {
     const firstEngine = AudioEngine.create(createAudioProviderStub().provider);
     const secondEngine = AudioEngine.create(createAudioProviderStub().provider);
