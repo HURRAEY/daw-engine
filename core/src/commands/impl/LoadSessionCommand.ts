@@ -4,6 +4,7 @@ import { SessionSnapshot } from "../../domain/Session";
 import { TrackId, RegionId } from "../../domain/types";
 import { TrackType } from "../../domain/Track";
 import { SendBusId } from "../../domain/SendBus";
+import { TimeDomain } from "../../domain/temporal/types";
 
 import { logger } from "../../utils/Logger";
 /**
@@ -105,8 +106,8 @@ export class LoadSessionCommand implements UndoableCommand {
         region.opaque = regionData.opaque ?? true;
         region.fadeIn = regionData.fadeIn;
         region.fadeOut = regionData.fadeOut;
-        region.playbackRate = regionData.playbackRate;
-        region.timeDomain = regionData.timeDomain;
+        region.playbackRate = regionData.playbackRate ?? 1;
+        region.timeDomain = regionData.timeDomain ?? TimeDomain.AudioTime;
         track.playlist.addRegion(region);
       }
     }

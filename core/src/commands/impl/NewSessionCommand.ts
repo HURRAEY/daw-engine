@@ -5,6 +5,7 @@ import { createFromTemplate } from "../../storage/SessionTemplate";
 import { TrackId, RegionId } from "../../domain/types";
 import { TrackType } from "../../domain/Track";
 import { SendBusId } from "../../domain/SendBus";
+import { TimeDomain } from "../../domain/temporal/types";
 
 import { logger } from "../../utils/Logger";
 /**
@@ -111,8 +112,8 @@ export class NewSessionCommand implements UndoableCommand {
         region.opaque = regionData.opaque ?? true;
         region.fadeIn = regionData.fadeIn;
         region.fadeOut = regionData.fadeOut;
-        region.playbackRate = regionData.playbackRate;
-        region.timeDomain = regionData.timeDomain;
+        region.playbackRate = regionData.playbackRate ?? 1;
+        region.timeDomain = regionData.timeDomain ?? TimeDomain.AudioTime;
         if (regionData.locked) region.locked = regionData.locked;
         track.playlist.addRegion(region);
       }
