@@ -31,6 +31,7 @@ export class VCATrack {
   public readonly slaveRemoved = new Signal<TrackId>();
   public readonly muteChanged = new Signal<boolean>();
   public readonly soloChanged = new Signal<boolean>();
+  public readonly automationEnabledChanged = new Signal<boolean>();
 
   constructor(id: string, name: string) {
     this.id = id;
@@ -214,7 +215,10 @@ export class VCATrack {
    * When enabled, the VCA gain may be driven by an automation lane.
    */
   public setAutomationEnabled(enabled: boolean): void {
+    if (this._automationEnabled === enabled) return;
+
     this._automationEnabled = enabled;
+    this.automationEnabledChanged.emit(enabled);
   }
 
   public get automationEnabled(): boolean {

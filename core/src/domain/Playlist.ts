@@ -10,7 +10,15 @@ export class Playlist {
   public readonly id: string;
   public name: string;
   private regions: Region[] = [];
+  private regionSubscriptions = new Map<
+    Region,
+    Array<{ dispose: () => void }>
+  >();
   private midiRegions: MidiRegion[] = [];
+  private midiRegionSubscriptions = new Map<
+    MidiRegion,
+    Array<{ dispose: () => void }>
+  >();
   private _crossfades: Map<CrossfadeId, Crossfade> = new Map();
   private _thawList: ThawList = new ThawList();
 
@@ -36,6 +44,7 @@ export class Playlist {
 
   public addRegion(region: Region) {
     this.regions.push(region);
+    this.bindRegion(region);
     this.sortRegions();
     this._thawList.queueEmission(this.regionAdded, region);
 
@@ -55,7 +64,13 @@ export class Playlist {
       this.removeCrossfade(xfade.id);
     }
 
-    this.regions = this.regions.filter((r) => r.id !== regionId);
+    const removedRegions = this.regions.filter(
+      (region) => region.id === regionId,
+    );
+    this.regions = this.regions.filter((region) => region.id !== regionId);
+    for (const removedRegion of removedRegions) {
+      this.disposeRegionSubscriptions(removedRegion);
+    }
     this._thawList.queueEmission(this.regionRemoved, regionId);
   }
 
@@ -226,16 +241,42 @@ export class Playlist {
     this.regions.sort((a, b) => a.start - b.start);
   }
 
+  private bindRegion(region: Region): void {
+    this.disposeRegionSubscriptions(region);
+    this.regionSubscriptions.set(region, [
+      region.lockedChanged.connect(() => {
+        this._thawList.queueEmission(this.regionChanged, region);
+      }),
+    ]);
+  }
+
+  private disposeRegionSubscriptions(region: Region): void {
+    const subscriptions = this.regionSubscriptions.get(region) ?? [];
+    for (const subscription of subscriptions) {
+      subscription.dispose();
+    }
+    this.regionSubscriptions.delete(region);
+  }
+
   // ─── MIDI Region Management ──────────────────────────────────────────────
 
   public addMidiRegion(region: MidiRegion): void {
     this.midiRegions.push(region);
+    this.bindMidiRegion(region);
     this.sortMidiRegions();
     this._thawList.queueEmission(this.midiRegionAdded, region);
   }
 
   public removeMidiRegion(regionId: RegionId): void {
-    this.midiRegions = this.midiRegions.filter((r) => r.id !== regionId);
+    const removedRegions = this.midiRegions.filter(
+      (region) => region.id === regionId,
+    );
+    this.midiRegions = this.midiRegions.filter(
+      (region) => region.id !== regionId,
+    );
+    for (const removedRegion of removedRegions) {
+      this.disposeMidiRegionSubscriptions(removedRegion);
+    }
     this._thawList.queueEmission(this.midiRegionRemoved, regionId);
   }
 
@@ -256,6 +297,27 @@ export class Playlist {
 
   private sortMidiRegions(): void {
     this.midiRegions.sort((a, b) => a.start - b.start);
+  }
+
+  private bindMidiRegion(region: MidiRegion): void {
+    this.disposeMidiRegionSubscriptions(region);
+    const notifyRegionChanged = (): void => {
+      this._thawList.queueEmission(this.midiRegionChanged, region);
+    };
+    this.midiRegionSubscriptions.set(region, [
+      region.noteAdded.connect(notifyRegionChanged),
+      region.noteRemoved.connect(notifyRegionChanged),
+      region.noteChanged.connect(notifyRegionChanged),
+      region.lockedChanged.connect(notifyRegionChanged),
+    ]);
+  }
+
+  private disposeMidiRegionSubscriptions(region: MidiRegion): void {
+    const subscriptions = this.midiRegionSubscriptions.get(region) ?? [];
+    for (const subscription of subscriptions) {
+      subscription.dispose();
+    }
+    this.midiRegionSubscriptions.delete(region);
   }
 
   // ─── C-1: Overlap & Coverage Detection ───────────────────────────────────

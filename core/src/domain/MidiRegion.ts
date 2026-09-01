@@ -14,6 +14,10 @@ export class MidiRegion {
 
   // Notes
   private _notes: MidiNote[] = [];
+  private _noteChangedSubscriptions = new Map<
+    MidiNoteId,
+    { dispose: () => void }
+  >();
 
   // Playback properties
   public muted: boolean = false;
@@ -52,13 +56,22 @@ export class MidiRegion {
   }
 
   public addNote(note: MidiNote): void {
-    this._notes.push(note);
+    const existingNoteIndex = this._notes.findIndex(
+      (existingNote) => existingNote.id === note.id,
+    );
+    this.disposeNoteChangedSubscription(note.id);
+
+    if (existingNoteIndex === -1) {
+      this._notes.push(note);
+    } else {
+      this._notes[existingNoteIndex] = note;
+    }
     this.sortNotes();
 
-    // Subscribe to note changes
-    note.changed.connect((n) => {
-      this.noteChanged.emit(n);
+    const subscription = note.changed.connect((changedNote) => {
+      this.noteChanged.emit(changedNote);
     });
+    this._noteChangedSubscriptions.set(note.id, subscription);
 
     this.noteAdded.emit(note);
   }
@@ -68,6 +81,7 @@ export class MidiRegion {
     if (index === -1) return undefined;
 
     const removed = this._notes.splice(index, 1)[0];
+    this.disposeNoteChangedSubscription(noteId);
     this.noteRemoved.emit(noteId);
     return removed;
   }
@@ -132,6 +146,11 @@ export class MidiRegion {
 
   private sortNotes(): void {
     this._notes.sort((a, b) => a.startFrame - b.startFrame);
+  }
+
+  private disposeNoteChangedSubscription(noteId: MidiNoteId): void {
+    this._noteChangedSubscriptions.get(noteId)?.dispose();
+    this._noteChangedSubscriptions.delete(noteId);
   }
 
   public toJSON(): MidiRegionSnapshot {

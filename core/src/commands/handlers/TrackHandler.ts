@@ -350,7 +350,7 @@ export class TrackHandler implements CommandHandler {
         if (!track) {
           return { success: false, message: `Track not found: ${trackId}` };
         }
-        track.comment = comment;
+        track.setComment(comment);
         return { success: true, message: "Track comment updated" };
       }
 

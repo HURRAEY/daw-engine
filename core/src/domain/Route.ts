@@ -18,6 +18,7 @@ import { PluginManager } from "../plugins/PluginManager";
 import { PluginParameter, PluginType } from "../plugins/Plugin";
 import { GenericPlugin } from "../plugins/impl/GenericPlugin";
 import { MeterPoint } from "./MeterType";
+import { DuplicateProcessorIdError } from "../errors/DAWErrors";
 
 export interface ProcessorMetadataSnapshot {
   id: string;
@@ -94,6 +95,10 @@ export class Route {
 
   public readonly processorAdded = new Signal<Processor>();
   public readonly processorRemoved = new Signal<ProcessorId>();
+  public readonly processorReordered = new Signal<{
+    processorId: ProcessorId;
+    index: number;
+  }>();
   public readonly coreProcessorsRestored =
     new Signal<CoreProcessorsRestoredEvent>();
   public readonly ioChanged = new Signal<{
@@ -171,6 +176,10 @@ export class Route {
     position: "pre" | "post" = "pre",
     index?: number,
   ) {
+    if (this.processors.some((existing) => existing.id === processor.id)) {
+      throw new DuplicateProcessorIdError(this.id, processor.id);
+    }
+
     const targetList =
       position === "pre" ? this._preFaderProcessors : this._postFaderProcessors;
 
@@ -227,6 +236,9 @@ export class Route {
         Math.min(newIndex, this._preFaderProcessors.length),
       );
       this._preFaderProcessors.splice(clampedIdx, 0, proc);
+      if (clampedIdx !== idx) {
+        this.processorReordered.emit({ processorId: id, index: clampedIdx });
+      }
       return;
     }
     // Try post-fader
@@ -238,6 +250,9 @@ export class Route {
         Math.min(newIndex, this._postFaderProcessors.length),
       );
       this._postFaderProcessors.splice(clampedIdx, 0, proc);
+      if (clampedIdx !== idx) {
+        this.processorReordered.emit({ processorId: id, index: clampedIdx });
+      }
       return;
     }
   }
@@ -364,6 +379,8 @@ export class Route {
     snapshot: RouteSnapshot,
     sampleRate: number = 44_100,
   ): void {
+    this.assertSnapshotProcessorIdsAreUnique(snapshot);
+
     const previousCoreProcessors = [
       this._trim,
       this._fader,
@@ -426,6 +443,25 @@ export class Route {
       this.addProcessor(this.restoreProcessor(processor, sampleRate), "post"),
     );
     this.setCompensationDelay(snapshot.compensationDelay ?? 0);
+  }
+
+  private assertSnapshotProcessorIdsAreUnique(snapshot: RouteSnapshot): void {
+    const processorIds: ProcessorId[] = [
+      snapshot.trim?.id ?? this._trim.id,
+      snapshot.fader?.id ?? this._fader.id,
+      snapshot.polarity?.id ?? this._polarity.id,
+      snapshot.panner?.id ?? this._panner.id,
+      ...(snapshot.preFaderProcessors ?? []).map((processor) => processor.id),
+      ...(snapshot.postFaderProcessors ?? []).map((processor) => processor.id),
+    ];
+    const uniqueProcessorIds = new Set<ProcessorId>();
+
+    for (const processorId of processorIds) {
+      if (uniqueProcessorIds.has(processorId)) {
+        throw new DuplicateProcessorIdError(snapshot.id, processorId);
+      }
+      uniqueProcessorIds.add(processorId);
+    }
   }
 
   private serializeProcessor(processor: Processor): ProcessorSnapshot {
