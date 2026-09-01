@@ -163,6 +163,11 @@ export interface AudioProvider {
     parameter: string,
     value: number,
   ): void;
+  setMasterProcessorAutomation(
+    processorId: ProcessorId,
+    parameter: string,
+    events: ReadonlyArray<AutomationPoint>,
+  ): void;
   registerMasterIO(inputId: string, outputId: string): void;
 
   // Send Bus (Side-chain / Parallel Processing)

@@ -2,10 +2,6 @@ import { UndoableCommand } from "../Command";
 import { AudioEngine } from "../../audio/AudioEngine";
 import { Session, SessionSnapshot } from "../../domain/Session";
 import { createFromTemplate } from "../../storage/SessionTemplate";
-import { TrackId, RegionId } from "../../domain/types";
-import { TrackType } from "../../domain/Track";
-import { SendBusId } from "../../domain/SendBus";
-import { TimeDomain } from "../../domain/temporal/types";
 
 import { logger } from "../../utils/Logger";
 /**
@@ -15,6 +11,7 @@ import { logger } from "../../utils/Logger";
  */
 export class NewSessionCommand implements UndoableCommand {
   private _snapshotBeforeNew?: SessionSnapshot;
+  private _snapshotAfterNew?: SessionSnapshot;
   private readonly name?: string;
   private readonly templateId?: string;
 
@@ -39,7 +36,8 @@ export class NewSessionCommand implements UndoableCommand {
     }
 
     // Apply the new session's snapshot onto the current engine session
-    await this.applySnapshot(newSession.toJSON(), engine);
+    this._snapshotAfterNew = newSession.toJSON();
+    await this.applySnapshot(this._snapshotAfterNew, engine);
     logger.debug(
       "NewSessionCommand",
       `New session created: ${engine.session.name}`,
@@ -54,80 +52,15 @@ export class NewSessionCommand implements UndoableCommand {
   }
 
   public async redo(): Promise<void> {
-    await this.execute();
+    if (!this._snapshotAfterNew) return;
+    const engine = AudioEngine.getInstance();
+    await this.applySnapshot(this._snapshotAfterNew, engine);
   }
 
   private async applySnapshot(
     snapshot: SessionSnapshot,
     engine: AudioEngine,
   ): Promise<void> {
-    const session = engine.session;
-
-    // Clear existing tracks
-    const existingTrackIds = session.tracks.map((t) => t.id);
-    for (const id of existingTrackIds) {
-      session.removeTrack(id as TrackId);
-    }
-
-    // Clear existing send buses
-    const existingSendBusIds = session.sendBuses.map((sb) => sb.id);
-    for (const id of existingSendBusIds) {
-      session.removeSendBus(id as SendBusId);
-    }
-
-    // Restore transport state
-    session.name = snapshot.name;
-    session.tempo = snapshot.tempo;
-    session.timeSignature = snapshot.timeSignature;
-    session.tempoChanged.emit(snapshot.tempo);
-
-    // Restore tracks and regions
-    for (const trackData of snapshot.tracks) {
-      const track = session.addTrack(
-        trackData.name,
-        trackData.type as TrackType,
-        trackData.id as TrackId,
-      );
-      track.armed = trackData.armed;
-      track.mute = trackData.mute;
-      track.solo = trackData.solo;
-      if (trackData.color) track.color = trackData.color;
-      if (trackData.recordMode !== undefined) {
-        track.setRecordMode(trackData.recordMode);
-      }
-
-      for (const regionData of trackData.regions) {
-        const { Region } = await import("../../domain/Region");
-        const region = new Region(
-          regionData.id as RegionId,
-          regionData.sourceId,
-          regionData.start,
-          regionData.length,
-          regionData.sourceStart,
-          regionData.name,
-          regionData.layer,
-        );
-        region.gain = regionData.gain;
-        region.muted = regionData.muted;
-        region.opaque = regionData.opaque ?? true;
-        region.fadeIn = regionData.fadeIn;
-        region.fadeOut = regionData.fadeOut;
-        region.playbackRate = regionData.playbackRate ?? 1;
-        region.timeDomain = regionData.timeDomain ?? TimeDomain.AudioTime;
-        if (regionData.locked) region.locked = regionData.locked;
-        track.playlist.addRegion(region);
-      }
-    }
-
-    // Restore send buses
-    for (const sbData of snapshot.sendBuses) {
-      session.addSendBus(
-        sbData.sourceTrackId as TrackId,
-        sbData.destId,
-        sbData.level,
-        sbData.preFader,
-        sbData.id as SendBusId,
-      );
-    }
+    await engine.restoreSessionFromSnapshot(snapshot);
   }
 }

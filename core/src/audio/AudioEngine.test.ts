@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
+import { MidiNote } from "../domain/MidiNote";
+import { MidiRegion } from "../domain/MidiRegion";
+import { MonitorMode } from "../domain/MonitorMode";
 import { Region } from "../domain/Region";
 import { Session } from "../domain/Session";
+import { Source } from "../domain/Source";
+import { TrackType } from "../domain/Track";
 import { MotionState } from "../domain/TransportFSM";
+import { PluginInsert } from "../processing/PluginInsert";
+import { PluginManager } from "../plugins/PluginManager";
 import { AudioEngine } from "./AudioEngine";
 import type { AudioProvider } from "./AudioProvider";
 
@@ -246,6 +253,319 @@ describe("AudioEngine lifecycle", () => {
         targetId: "target-track",
         type: "sidechain",
       }),
+    );
+    engine.dispose();
+  });
+
+  it("disconnects removed master processor signals", () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const plugin = PluginManager.getInstance().createPlugin("internal-gain");
+    if (!plugin) throw new Error("internal-gain plugin is unavailable");
+    const insert = new PluginInsert("master-insert", plugin);
+    engine.session.masterBus.addProcessor(insert);
+    providerStub.getMethod("setMasterProcessorParameter").mockClear();
+
+    engine.session.masterBus.removeProcessor(insert.id);
+    plugin.setParameter("gain", -6);
+
+    expect(
+      providerStub.getMethod("setMasterProcessorParameter"),
+    ).not.toHaveBeenCalled();
+    engine.dispose();
+  });
+
+  it("registers restored master IO before publishing restored routing", async () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const target = new Session("target", "target", 48_000);
+    const plugin = PluginManager.getInstance().createPlugin("internal-gain");
+    if (!plugin) throw new Error("internal-gain plugin is unavailable");
+    target.masterBus.addProcessor(new PluginInsert("master-insert", plugin));
+    const registerMasterIO = providerStub.getMethod("registerMasterIO");
+    const addMasterProcessor = providerStub.getMethod("addMasterProcessor");
+    const applyRoutingSnapshot = providerStub.getMethod("applyRoutingSnapshot");
+    registerMasterIO.mockClear();
+    addMasterProcessor.mockClear();
+    applyRoutingSnapshot.mockClear();
+
+    await engine.restoreSessionFromSnapshot(target.toJSON());
+
+    expect(registerMasterIO).toHaveBeenCalledWith(
+      target.masterBus.input.id,
+      target.masterBus.output.id,
+    );
+    expect(registerMasterIO.mock.invocationCallOrder[0]).toBeLessThan(
+      Math.min(...applyRoutingSnapshot.mock.invocationCallOrder),
+    );
+    expect(applyRoutingSnapshot).toHaveBeenCalledTimes(1);
+    expect(
+      Math.max(...addMasterProcessor.mock.invocationCallOrder),
+    ).toBeLessThan(applyRoutingSnapshot.mock.invocationCallOrder[0]);
+    engine.dispose();
+  });
+
+  it("waits for restored sources before creating dependent tracks", async () => {
+    const providerStub = createAudioProviderStub();
+    const sourceReady = createDeferred();
+    providerStub
+      .getMethod("addSource")
+      .mockReturnValueOnce(sourceReady.promise);
+    const engine = AudioEngine.create(providerStub.provider);
+    const target = new Session("target", "target", 48_000);
+    target.addSource(
+      new Source("source", "source.wav", "file:///source.wav", 48_000),
+    );
+    target.addTrack("track", undefined, "track");
+    providerStub.getMethod("createTrack").mockClear();
+
+    const restoration = engine.restoreSessionFromSnapshot(target.toJSON());
+
+    expect(providerStub.getMethod("addSource")).toHaveBeenCalledTimes(1);
+    expect(providerStub.getMethod("createTrack")).not.toHaveBeenCalled();
+
+    sourceReady.resolve();
+    await restoration;
+
+    expect(providerStub.getMethod("createTrack")).toHaveBeenCalledWith(
+      "track",
+      "track",
+      expect.any(String),
+      expect.any(String),
+    );
+    engine.dispose();
+  });
+
+  it("preserves the current session when restored source loading fails", async () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const currentSession = engine.session;
+    const target = new Session("target", "target", 48_000);
+    target.addSource(
+      new Source("source", "source.wav", "file:///source.wav", 48_000),
+    );
+    providerStub
+      .getMethod("addSource")
+      .mockRejectedValueOnce(new Error("source unavailable"));
+
+    await expect(
+      engine.restoreSessionFromSnapshot(target.toJSON()),
+    ).rejects.toThrow("source unavailable");
+
+    expect(engine.session).toBe(currentSession);
+    expect(engine.session.name).toBe("Untitled Session");
+    expect(
+      providerStub.getMethod("removeMasterProcessor"),
+    ).not.toHaveBeenCalled();
+    engine.dispose();
+  });
+
+  it("synchronizes restored transport and punch state", async () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const target = new Session("target", "target", 48_000);
+    const punchRange = target.addRange("punch", 24_000, 72_000, "punch");
+    target.transportFrame = 96_000;
+    target.punchRangeId = punchRange.id;
+    target.punchEnabled = true;
+    providerStub.getMethod("seek").mockClear();
+    providerStub.getMethod("enablePunchRecording").mockClear();
+    providerStub.getMethod("setPunchRange").mockClear();
+
+    await engine.restoreSessionFromSnapshot(target.toJSON());
+
+    expect(providerStub.getMethod("seek")).toHaveBeenCalledWith(2);
+    expect(providerStub.getMethod("enablePunchRecording")).toHaveBeenCalledWith(
+      true,
+    );
+    expect(providerStub.getMethod("setPunchRange")).toHaveBeenCalledWith(
+      24_000,
+      72_000,
+    );
+    engine.dispose();
+  });
+
+  it("rebinds restored master processors and hydrates their backend state", async () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const target = new Session("target", "target", 48_000);
+    target.masterBus.trim = 2;
+    target.masterBus.volume = -6;
+    target.masterBus.pan = 0.25;
+    target.masterBus.polarity.setInverted(true);
+    target.masterBus.fader.active = false;
+    target.masterBus.fader
+      .getAutomation("gain")
+      .addPoint(0, -6, undefined, "master-point");
+    const snapshot = target.toJSON();
+    const previousMasterProcessorIds = engine.session.masterBus.processors.map(
+      (processor) => processor.id,
+    );
+    providerStub.getMethod("addMasterProcessor").mockClear();
+    providerStub.getMethod("removeMasterProcessor").mockClear();
+    providerStub.getMethod("setMasterProcessorParameter").mockClear();
+    providerStub.getMethod("setMasterProcessorAutomation").mockClear();
+
+    await engine.restoreSessionFromSnapshot(snapshot);
+
+    const restoredMaster = engine.session.masterBus;
+    expect(restoredMaster.processors.map((processor) => processor.id)).toEqual(
+      snapshot.masterBus?.trim
+        ? [
+            snapshot.masterBus.trim.id,
+            snapshot.masterBus.fader.id,
+            snapshot.masterBus.polarity.id,
+            snapshot.masterBus.panner.id,
+          ]
+        : [],
+    );
+    previousMasterProcessorIds.forEach((processorId) => {
+      expect(
+        providerStub.getMethod("removeMasterProcessor"),
+      ).toHaveBeenCalledWith(processorId);
+    });
+    expect(
+      providerStub.getMethod("setMasterProcessorParameter"),
+    ).toHaveBeenCalledWith(restoredMaster.trimProcessor.id, "gain", 2);
+    expect(
+      providerStub.getMethod("setMasterProcessorParameter"),
+    ).toHaveBeenCalledWith(restoredMaster.fader.id, "gain", -6);
+    expect(
+      providerStub.getMethod("setMasterProcessorParameter"),
+    ).toHaveBeenCalledWith(restoredMaster.fader.id, "active", 0);
+    expect(
+      providerStub.getMethod("setMasterProcessorParameter"),
+    ).toHaveBeenCalledWith(restoredMaster.polarity.id, "polarity", 1);
+    expect(
+      providerStub.getMethod("setMasterProcessorParameter"),
+    ).toHaveBeenCalledWith(restoredMaster.panner.id, "pan", 0.25);
+    expect(
+      providerStub.getMethod("setMasterProcessorAutomation"),
+    ).toHaveBeenCalledWith(restoredMaster.fader.id, "gain", [
+      expect.objectContaining({ id: "master-point", value: -6 }),
+    ]);
+
+    await engine.restoreSessionFromSnapshot(snapshot);
+    const repeatedlyRestoredMaster = engine.session.masterBus;
+    providerStub.getMethod("setMasterProcessorParameter").mockClear();
+    providerStub.getMethod("setMasterProcessorAutomation").mockClear();
+    repeatedlyRestoredMaster.volume = -3;
+    repeatedlyRestoredMaster.fader.getAutomation("gain").addPoint(1, -3);
+
+    expect(
+      providerStub.getMethod("setMasterProcessorParameter"),
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      providerStub.getMethod("setMasterProcessorParameter"),
+    ).toHaveBeenCalledWith(repeatedlyRestoredMaster.fader.id, "gain", -3);
+    expect(
+      providerStub.getMethod("setMasterProcessorAutomation"),
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      providerStub.getMethod("setMasterProcessorAutomation"),
+    ).toHaveBeenCalledWith(
+      repeatedlyRestoredMaster.fader.id,
+      "gain",
+      expect.arrayContaining([
+        expect.objectContaining({ id: "master-point", value: -6 }),
+        expect.objectContaining({ value: -3 }),
+      ]),
+    );
+    engine.dispose();
+  });
+
+  it("hydrates restored track state before subscribing to live changes", async () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const target = new Session("target", "target", 48_000);
+    const track = target.addTrack("midi-track", TrackType.MIDI, "track-1");
+    track.setMonitor(true);
+    track.setMute(true);
+    track.setSolo(true);
+    track.setSoloIsolate(true);
+    track.setSoloSafe(true);
+    track.setMonitorMode(MonitorMode.INPUT);
+    track.route.volume = -8;
+    track.route.pan = 0.25;
+
+    const plugin = PluginManager.getInstance().createPlugin("internal-gain");
+    if (!plugin) throw new Error("internal-gain plugin is unavailable");
+    plugin.setParameter("gain", -4);
+    track.route.addProcessor(new PluginInsert("track-insert", plugin), "post");
+
+    const midiRegion = new MidiRegion("midi-region", "restored-midi", 120, 960);
+    midiRegion.addNote(new MidiNote("note-1", 60, 100, 0, 480));
+    track.playlist.addMidiRegion(midiRegion);
+
+    const snapshot = target.toJSON();
+    await engine.restoreSessionFromSnapshot(snapshot);
+
+    const restoredTrack = engine.session.getTrack("track-1");
+    if (!restoredTrack) throw new Error("restored track is unavailable");
+    expect(providerStub.getMethod("setMonitor")).toHaveBeenCalledWith(
+      "track-1",
+      true,
+    );
+    expect(providerStub.getMethod("setTrackMute")).toHaveBeenCalledWith(
+      "track-1",
+      true,
+    );
+    expect(providerStub.getMethod("setTrackSolo")).toHaveBeenCalledWith(
+      "track-1",
+      true,
+    );
+    expect(providerStub.getMethod("setTrackSoloIsolate")).toHaveBeenCalledWith(
+      "track-1",
+      true,
+    );
+    expect(providerStub.getMethod("setTrackSoloSafe")).toHaveBeenCalledWith(
+      "track-1",
+      true,
+    );
+    expect(providerStub.getMethod("setMonitorMode")).toHaveBeenCalledWith(
+      "track-1",
+      MonitorMode.INPUT,
+    );
+    expect(
+      providerStub.getMethod("setProcessorParameter"),
+    ).toHaveBeenCalledWith("track-1", restoredTrack.route.fader.id, "gain", -8);
+    expect(
+      providerStub.getMethod("setProcessorParameter"),
+    ).toHaveBeenCalledWith(
+      "track-1",
+      restoredTrack.route.panner.id,
+      "pan",
+      0.25,
+    );
+    expect(
+      providerStub.getMethod("setProcessorParameter"),
+    ).toHaveBeenCalledWith("track-1", "track-insert", "gain", -4);
+    expect(providerStub.getMethod("scheduleMidiRegion")).toHaveBeenCalledWith(
+      "track-1",
+      expect.objectContaining({
+        id: "midi-region",
+        notes: [expect.objectContaining({ id: "note-1" })],
+      }),
+    );
+
+    await engine.restoreSessionFromSnapshot(snapshot);
+    const repeatedlyRestoredTrack = engine.session.getTrack("track-1");
+    if (!repeatedlyRestoredTrack) {
+      throw new Error("repeatedly restored track is unavailable");
+    }
+    providerStub.getMethod("setProcessorParameter").mockClear();
+    repeatedlyRestoredTrack.route.volume = -3;
+
+    expect(
+      providerStub.getMethod("setProcessorParameter"),
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      providerStub.getMethod("setProcessorParameter"),
+    ).toHaveBeenCalledWith(
+      "track-1",
+      repeatedlyRestoredTrack.route.fader.id,
+      "gain",
+      -3,
     );
     engine.dispose();
   });

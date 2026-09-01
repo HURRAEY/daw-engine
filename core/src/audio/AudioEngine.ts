@@ -61,6 +61,10 @@ export class AudioEngine {
   /** Per-track signal disposers — cleaned up when a track is removed */
   private trackDisposers: Map<string, Array<{ dispose: () => void }>> =
     new Map();
+  private masterProcessorDisposers: Map<
+    string,
+    Array<{ dispose: () => void }>
+  > = new Map();
   /** Per-SendBus signal disposers — cleaned up when a send bus is removed */
   private sendBusDisposers: Map<string, Array<{ dispose: () => void }>> =
     new Map();
@@ -71,7 +75,7 @@ export class AudioEngine {
     this.midiInput = MidiInput.getInstance();
 
     // backend가 현재 Session 전체를 먼저 구성한 뒤 이후 변경만 signal로 전달한다.
-    this.syncSessionToBackend();
+    this.syncSessionGraphToBackend();
     this.setupSessionListeners();
   }
 
@@ -125,16 +129,23 @@ export class AudioEngine {
       disposers.forEach((disposer) => disposer.dispose()),
     );
     this.trackDisposers.clear();
+    this.masterProcessorDisposers.forEach((disposers) =>
+      disposers.forEach((disposer) => disposer.dispose()),
+    );
+    this.masterProcessorDisposers.clear();
     this.sendBusDisposers.forEach((disposers) =>
       disposers.forEach((disposer) => disposer.dispose()),
     );
     this.sendBusDisposers.clear();
   }
 
-  public setBackend(backend: AudioProvider): void {
+  public async setBackend(backend: AudioProvider): Promise<void> {
     this.backend = backend;
     this.isBackendTransportRunning = false;
-    this.syncSessionToBackend();
+    if (this.session.sources.size > 0) {
+      await this.addSessionSourcesToBackend(this.session);
+    }
+    this.syncSessionGraphToBackend();
   }
 
   /**
@@ -205,7 +216,7 @@ export class AudioEngine {
     }
   }
 
-  private syncSessionToBackend(): void {
+  private syncSessionGraphToBackend(): void {
     const { masterBus } = this.session;
     this.backend.registerMasterIO(masterBus.input.id, masterBus.output.id);
     masterBus.processors.forEach((processor, index) => {
@@ -226,14 +237,19 @@ export class AudioEngine {
     this.syncPunchRange();
     this.backend.seek(this.session.transportFrame / this.session.sampleRate);
 
-    this.session.sources.forEach((source) => {
-      void this.backend.addSource(source);
-    });
     this.session.tracks.forEach((track) => this.syncTrackToBackend(track));
     this.session.sendBuses.forEach((sendBus) =>
       this.syncSendBusToBackend(sendBus),
     );
     this.syncRoutingSnapshot();
+  }
+
+  private async addSessionSourcesToBackend(session: Session): Promise<void> {
+    await Promise.all(
+      Array.from(session.sources.values(), (source) =>
+        this.backend.addSource(source),
+      ),
+    );
   }
 
   private syncRoutingSnapshot(): void {
@@ -351,18 +367,36 @@ export class AudioEngine {
   }
 
   private syncMasterProcessorState(processor: Processor): void {
+    const setParameter = (parameter: string, value: number): void => {
+      this.backend.setMasterProcessorParameter(processor.id, parameter, value);
+    };
+    setParameter("active", processor.active ? 1 : 0);
     if (processor instanceof GainProcessor) {
-      this.backend.setMasterGain(processor.gain);
-    }
-    if (processor instanceof PluginInsert) {
+      setParameter("gain", processor.gain);
+    } else if (processor instanceof Panner) {
+      setParameter("pan", processor.azimuth);
+      setParameter("width", processor.width);
+    } else if (processor instanceof PanProcessor) {
+      setParameter("pan", processor.pan);
+      setParameter("width", processor.width);
+    } else if (processor instanceof PolarityProcessor) {
+      setParameter("polarity", processor.inverted ? 1 : 0);
+    } else if (processor instanceof SendProcessor) {
+      setParameter("level", processor.level);
+      setParameter("preFader", processor.preFader ? 1 : 0);
+      setParameter("muted", processor.muted ? 1 : 0);
+    } else if (processor instanceof PluginInsert) {
       processor.plugin.getParameters().forEach((parameter) => {
-        this.backend.setMasterProcessorParameter(
-          processor.id,
-          parameter.id,
-          parameter.value,
-        );
+        setParameter(parameter.id, parameter.value);
       });
     }
+    processor.automations.forEach((automation, parameter) => {
+      this.backend.setMasterProcessorAutomation(
+        processor.id,
+        parameter,
+        automation.getPoints(),
+      );
+    });
   }
 
   private syncIOConnections(track: Track): void {
@@ -408,6 +442,7 @@ export class AudioEngine {
         const index = masterBus.processors.indexOf(proc);
         const type = getProcessorRuntimeType(proc);
         this.backend.addMasterProcessor(proc.id, type, index);
+        this.syncMasterProcessorState(proc);
         this.connectMasterProcessorSignals(proc);
         this.syncRoutingSnapshot();
       }),
@@ -415,7 +450,37 @@ export class AudioEngine {
 
     this.signalDisposers.push(
       masterBus.processorRemoved.connect((procId: string) => {
+        this.disposeMasterProcessorSignals(procId);
         this.backend.removeMasterProcessor(procId);
+        this.syncRoutingSnapshot();
+      }),
+      masterBus.coreProcessorsRestored.connect(
+        ({ previousProcessors, currentProcessors }) => {
+          previousProcessors.forEach((processor) => {
+            this.disposeMasterProcessorSignals(processor.id);
+            this.backend.removeMasterProcessor(processor.id);
+          });
+          currentProcessors.forEach((processor) => {
+            const index = masterBus.processors.indexOf(processor);
+            this.backend.addMasterProcessor(
+              processor.id,
+              getProcessorRuntimeType(processor),
+              index,
+            );
+            this.syncMasterProcessorState(processor);
+            this.connectMasterProcessorSignals(processor);
+          });
+          this.syncRoutingSnapshot();
+        },
+      ),
+    );
+
+    this.signalDisposers.push(
+      masterBus.ioChanged.connect(({ inputId, outputId }) => {
+        this.backend.registerMasterIO(inputId, outputId);
+      }),
+      this.session.restored.connect(() => {
+        this.backend.registerMasterIO(masterBus.input.id, masterBus.output.id);
         this.syncRoutingSnapshot();
       }),
     );
@@ -452,14 +517,11 @@ export class AudioEngine {
     // Track Added: Sync backend and subscribe to processor signals
     this.signalDisposers.push(
       this.session.trackAdded.connect((track: Track) => {
-        this.createBackendTrack(track);
+        this.syncTrackToBackend(track);
 
         const disposers: Array<{ dispose: () => void }> = [];
 
-        // Sync initial processors
-        track.route.processors.forEach((proc: Processor, index: number) => {
-          const type = getProcessorRuntimeType(proc);
-          this.backend.addProcessor(track.id, proc.id, type, index);
+        track.route.processors.forEach((proc: Processor) => {
           this.connectProcessorSignals(track.id, proc, disposers);
         });
 
@@ -514,7 +576,10 @@ export class AudioEngine {
     // Source Added
     this.signalDisposers.push(
       this.session.sourceAdded.connect((source: Source) => {
-        this.backend.addSource(source);
+        void Promise.resolve(this.backend.addSource(source)).catch(
+          (error: unknown) =>
+            logger.error("AudioEngine", "Failed to add source:", error),
+        );
       }),
     );
 
@@ -725,11 +790,52 @@ export class AudioEngine {
   }
 
   private connectMasterProcessorSignals(proc: Processor): void {
-    this.bindProcessorSnapshotSignals(proc, this.signalDisposers);
+    this.disposeMasterProcessorSignals(proc.id);
+    const disposers: Array<{ dispose: () => void }> = [];
+    this.bindProcessorSnapshotSignals(proc, disposers);
+    disposers.push(
+      proc.activeChanged.connect((active: boolean) => {
+        this.backend.setMasterProcessorParameter(
+          proc.id,
+          "active",
+          active ? 1 : 0,
+        );
+      }),
+    );
     if (proc instanceof GainProcessor) {
-      this.signalDisposers.push(
+      disposers.push(
         proc.gainChanged.connect((val: number) => {
-          this.backend.setMasterGain(val);
+          this.backend.setMasterProcessorParameter(proc.id, "gain", val);
+        }),
+      );
+    }
+    if (proc instanceof Panner) {
+      disposers.push(
+        proc.azimuthChanged.connect((val: number) => {
+          this.backend.setMasterProcessorParameter(proc.id, "pan", val);
+        }),
+        proc.widthChanged.connect((val: number) => {
+          this.backend.setMasterProcessorParameter(proc.id, "width", val);
+        }),
+      );
+    } else if (proc instanceof PanProcessor) {
+      disposers.push(
+        proc.panChanged.connect((val: number) => {
+          this.backend.setMasterProcessorParameter(proc.id, "pan", val);
+        }),
+        proc.widthChanged.connect((val: number) => {
+          this.backend.setMasterProcessorParameter(proc.id, "width", val);
+        }),
+      );
+    }
+    if (proc instanceof PolarityProcessor) {
+      disposers.push(
+        proc.polarityChanged.connect((inverted: boolean) => {
+          this.backend.setMasterProcessorParameter(
+            proc.id,
+            "polarity",
+            inverted ? 1 : 0,
+          );
         }),
       );
     }
@@ -738,7 +844,7 @@ export class AudioEngine {
       proc.plugin &&
       proc.plugin.parameterChanged
     ) {
-      this.signalDisposers.push(
+      disposers.push(
         proc.plugin.parameterChanged.connect(
           ({ id, value }: { id: string; value: number }) => {
             this.backend.setMasterProcessorParameter(proc.id, id, value);
@@ -746,6 +852,39 @@ export class AudioEngine {
         ),
       );
     }
+    proc.automations.forEach((list, parameter) => {
+      this.bindMasterAutomationList(proc.id, parameter, list, disposers);
+    });
+    disposers.push(
+      proc.automationAdded.connect(({ paramName, list }) => {
+        this.bindMasterAutomationList(proc.id, paramName, list, disposers);
+      }),
+    );
+    this.masterProcessorDisposers.set(proc.id, disposers);
+  }
+
+  private bindMasterAutomationList(
+    processorId: string,
+    parameter: string,
+    list: AutomationList,
+    disposers: Array<{ dispose: () => void }>,
+  ): void {
+    disposers.push(
+      list.changed.connect(() => {
+        this.backend.setMasterProcessorAutomation(
+          processorId,
+          parameter,
+          list.getPoints(),
+        );
+      }),
+    );
+  }
+
+  private disposeMasterProcessorSignals(processorId: string): void {
+    this.masterProcessorDisposers
+      .get(processorId)
+      ?.forEach((disposer) => disposer.dispose());
+    this.masterProcessorDisposers.delete(processorId);
   }
 
   private connectProcessorSignals(
@@ -1436,7 +1575,9 @@ export class AudioEngine {
       const preRollSeconds = this.session.getPreRollDurationSeconds();
       logger.info(
         "AudioEngine",
-        `Pre-roll: ${this.session.preRollBars} bars (${preRollSeconds.toFixed(2)}s)`,
+        `Pre-roll: ${this.session.preRollBars} bars (${preRollSeconds.toFixed(
+          2,
+        )}s)`,
       );
 
       // Enable metronome for pre-roll if not already enabled
@@ -1660,22 +1801,37 @@ export class AudioEngine {
   }
 
   // Session Management
-  public loadSession(newSession: Session): void {
+  public async loadSession(newSession: Session): Promise<void> {
     this.stopImmediately();
+    if (newSession.sources.size > 0) {
+      await this.addSessionSourcesToBackend(newSession);
+    }
     // 기존 backend graph를 제거해야 교체된 Session의 Track과 Processor만 남는다.
     this.clearSessionFromBackend();
     this.disconnectSessionSignals();
     this.session = newSession;
-    this.syncSessionToBackend();
+    this.syncSessionGraphToBackend();
     this.setupSessionListeners();
   }
 
-  public loadSessionFromSnapshot(snapshot: SessionSnapshot): void {
+  public async loadSessionFromSnapshot(
+    snapshot: SessionSnapshot,
+  ): Promise<void> {
+    await this.loadSession(Session.fromJSON(snapshot));
+  }
+
+  public async restoreSessionFromSnapshot(
+    snapshot: SessionSnapshot,
+  ): Promise<void> {
     this.stopImmediately();
+    const restoredSession = Session.fromJSON(snapshot);
+    if (restoredSession.sources.size > 0) {
+      await this.addSessionSourcesToBackend(restoredSession);
+    }
     this.clearSessionFromBackend();
     this.disconnectSessionSignals();
-    this.session = Session.fromJSON(snapshot);
-    this.syncSessionToBackend();
+    this.session.restoreFromJSON(snapshot);
+    this.syncSessionGraphToBackend();
     this.setupSessionListeners();
   }
 
