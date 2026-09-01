@@ -169,7 +169,7 @@ describe("AudioEngine lifecycle", () => {
     engine.dispose();
   });
 
-  it("hydrates the replacement backend with the current session", () => {
+  it("hydrates the replacement backend with the current session", async () => {
     const initialProviderStub = createAudioProviderStub();
     const replacementProviderStub = createAudioProviderStub();
     const engine = AudioEngine.create(initialProviderStub.provider);
@@ -180,7 +180,7 @@ describe("AudioEngine lifecycle", () => {
       new Region("region-1", "source-1", 0, 44_100, 0, "audio-region"),
     );
 
-    engine.setBackend(replacementProviderStub.provider);
+    await engine.setBackend(replacementProviderStub.provider);
 
     expect(
       replacementProviderStub.getMethod("createTrack"),
@@ -205,6 +205,52 @@ describe("AudioEngine lifecycle", () => {
       "track-1",
       expect.objectContaining({ id: "region-1" }),
     );
+    expect(initialProviderStub.getMethod("stop")).toHaveBeenCalledOnce();
+    engine.dispose();
+  });
+
+  it("keeps the previous backend when replacement source hydration fails", async () => {
+    const initialProviderStub = createAudioProviderStub();
+    const replacementProviderStub = createAudioProviderStub();
+    const engine = AudioEngine.create(initialProviderStub.provider);
+    engine.session.addSource(
+      new Source("source", "source.wav", "file:///source.wav", 48_000),
+    );
+    replacementProviderStub
+      .getMethod("addSource")
+      .mockRejectedValue(new Error("decode failed"));
+    initialProviderStub.getMethod("getEngineType").mockReturnValue("Worklet");
+
+    await expect(
+      engine.setBackend(replacementProviderStub.provider),
+    ).rejects.toThrow("decode failed");
+
+    expect(engine.getEngineType()).toBe("Worklet");
+    expect(initialProviderStub.getMethod("stop")).not.toHaveBeenCalled();
+    expect(
+      replacementProviderStub.getMethod("registerMasterIO"),
+    ).not.toHaveBeenCalled();
+    engine.dispose();
+  });
+
+  it("restores the previous backend when replacement graph hydration fails", async () => {
+    const initialProviderStub = createAudioProviderStub();
+    const replacementProviderStub = createAudioProviderStub();
+    const engine = AudioEngine.create(initialProviderStub.provider);
+    initialProviderStub.getMethod("getEngineType").mockReturnValue("Worklet");
+    replacementProviderStub
+      .getMethod("registerMasterIO")
+      .mockImplementation(() => {
+        throw new Error("graph failed");
+      });
+
+    await expect(
+      engine.setBackend(replacementProviderStub.provider),
+    ).rejects.toThrow("graph failed");
+
+    expect(engine.getEngineType()).toBe("Worklet");
+    expect(initialProviderStub.getMethod("stop")).not.toHaveBeenCalled();
+    expect(replacementProviderStub.getMethod("stop")).toHaveBeenCalledOnce();
     engine.dispose();
   });
 
@@ -246,7 +292,8 @@ describe("AudioEngine lifecycle", () => {
 
     expect(applyRoutingSnapshot).toHaveBeenCalledTimes(1);
     const snapshot = applyRoutingSnapshot.mock.lastCall?.[0] as
-      RoutingSnapshot | undefined;
+      | RoutingSnapshot
+      | undefined;
     const trackNode = snapshot?.nodes.find((node) => node.id === track.id);
     expect(
       trackNode?.processors.map((processor) => ({
@@ -284,7 +331,8 @@ describe("AudioEngine lifecycle", () => {
 
     expect(applyRoutingSnapshot).toHaveBeenCalledTimes(1);
     const snapshot = applyRoutingSnapshot.mock.lastCall?.[0] as
-      RoutingSnapshot | undefined;
+      | RoutingSnapshot
+      | undefined;
     const masterNode = snapshot?.nodes.find(
       (node) => node.id === engine.session.masterBus.id,
     );
@@ -374,7 +422,8 @@ describe("AudioEngine lifecycle", () => {
 
     expect(applyRoutingSnapshot).toHaveBeenCalledTimes(1);
     const snapshot = applyRoutingSnapshot.mock.lastCall?.[0] as
-      RoutingSnapshot | undefined;
+      | RoutingSnapshot
+      | undefined;
     const trackNode = snapshot?.nodes.find(
       (node) => node.id === restoredTrack.id,
     );
