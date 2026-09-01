@@ -912,7 +912,7 @@ export const SetRegionPlaybackRateCommandSchema = z.object({
   payload: z.object({
     trackId: z.string(),
     regionId: z.string(),
-    playbackRate: z.number(),
+    playbackRate: z.number().finite().positive(),
   }),
 });
 

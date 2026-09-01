@@ -72,17 +72,18 @@ export class PlaylistEngine {
     const renderStart = Math.max(startFrame, region.start);
     const renderEnd = Math.min(startFrame + numFrames, region.end);
 
-    const regionOffset = region.sourceStart + (renderStart - region.start);
+    const playbackRate = region.playbackRate;
+    if (!Number.isFinite(playbackRate) || playbackRate <= 0) return;
+    const regionOffset =
+      region.sourceStart + (renderStart - region.start) * playbackRate;
     const outOffset = renderStart - startFrame;
     const length = renderEnd - renderStart;
-
-    const playbackRate = region.playbackRate || 1.0;
 
     // When playbackRate != 1, the source consumes samples faster/slower.
     // Clamp the render length so we never read past the source buffer.
     const maxSourceFrames = bufferDataL.length - 1 - regionOffset;
     const maxOutputFrames =
-      playbackRate > 0 ? Math.ceil(maxSourceFrames / playbackRate) : length;
+      maxSourceFrames >= 0 ? Math.floor(maxSourceFrames / playbackRate) + 1 : 0;
     const clampedLength = Math.min(length, maxOutputFrames);
 
     for (let i = 0; i < clampedLength; i++) {
