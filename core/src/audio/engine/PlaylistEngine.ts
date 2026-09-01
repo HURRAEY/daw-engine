@@ -39,17 +39,30 @@ export class PlaylistEngine {
     //    by a higher-layer region. Lower layers only write to uncovered positions.
     const covered = new Uint8Array(numFrames);
 
-    // 5. Render each region (highest layer first)
-    for (const region of activeRegions) {
-      this.renderRegion(
-        outputLeft,
-        outputRight,
-        startFrame,
-        numFrames,
-        region,
-        getBuffer,
-        covered,
-      );
+    // 5. Render each layer. Regions on the same layer share only the
+    //    coverage inherited from higher layers, so they can overlap.
+    for (let index = 0; index < activeRegions.length; ) {
+      const layer = activeRegions[index].layer;
+      const layerCoverage = new Uint8Array(numFrames);
+      while (
+        index < activeRegions.length &&
+        activeRegions[index].layer === layer
+      ) {
+        this.renderRegion(
+          outputLeft,
+          outputRight,
+          startFrame,
+          numFrames,
+          activeRegions[index],
+          getBuffer,
+          covered,
+          layerCoverage,
+        );
+        index++;
+      }
+      for (let frame = 0; frame < numFrames; frame++) {
+        covered[frame] ||= layerCoverage[frame];
+      }
     }
   }
 
@@ -61,6 +74,7 @@ export class PlaylistEngine {
     region: RegionDTO,
     getBuffer: (url: string) => AudioBuffer | null,
     covered: Uint8Array,
+    layerCoverage: Uint8Array,
   ) {
     const buffer = getBuffer(region.sourceId);
     if (!buffer) return;
@@ -134,7 +148,7 @@ export class PlaylistEngine {
       outR[outIdx] += interpolatedR * gain;
 
       if (region.opaque !== false) {
-        covered[outIdx] = 1;
+        layerCoverage[outIdx] = 1;
       }
     }
   }

@@ -72,6 +72,33 @@ describe("PlaylistEngine layer rendering", () => {
     expect([...output]).toEqual([3, 3, 3, 3]);
   });
 
+  it("mixes overlapping opaque regions on the same layer", () => {
+    const output = render([
+      createRegion("first", "lower-source", 1, true),
+      createRegion("second", "upper-source", 1, true),
+    ]);
+
+    expect([...output]).toEqual([3, 3, 3, 3]);
+  });
+
+  it("uses the union of same-layer opaque coverage to mask lower layers", () => {
+    const first = createRegion("first", "upper-source", 1, true);
+    first.length = 2;
+    first.end = 2;
+    const second = createRegion("second", "upper-source", 1, true);
+    second.start = 1;
+    second.length = 2;
+    second.end = 3;
+
+    const output = render([
+      createRegion("lower", "lower-source", 0, true),
+      first,
+      second,
+    ]);
+
+    expect([...output]).toEqual([2, 4, 2, 1]);
+  });
+
   it("applies playback rate when calculating a block's source offset", () => {
     const engine = new PlaylistEngine();
     const left = new Float32Array(2);
