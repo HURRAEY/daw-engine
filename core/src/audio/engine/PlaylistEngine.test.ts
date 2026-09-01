@@ -71,4 +71,60 @@ describe("PlaylistEngine layer rendering", () => {
 
     expect([...output]).toEqual([3, 3, 3, 3]);
   });
+
+  it("applies playback rate when calculating a block's source offset", () => {
+    const engine = new PlaylistEngine();
+    const left = new Float32Array(2);
+    const right = new Float32Array(2);
+    const region = createRegion("rate", "rate-source", 0, true);
+    region.length = 8;
+    region.end = 8;
+    region.playbackRate = 2;
+    const samples = new Float32Array([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+
+    engine.render(left, right, 2, 2, [region], () => {
+      return {
+        numberOfChannels: 1,
+        getChannelData: () => samples,
+      } as unknown as AudioBuffer;
+    });
+
+    expect([...left]).toEqual([4, 6]);
+  });
+
+  it("renders a valid sample at the exact playback-rate buffer boundary", () => {
+    const engine = new PlaylistEngine();
+    const left = new Float32Array(3);
+    const right = new Float32Array(3);
+    const region = createRegion("rate", "rate-source", 0, true);
+    region.length = 10;
+    region.end = 10;
+    region.playbackRate = 2;
+    const samples = new Float32Array([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+
+    engine.render(left, right, 2, 3, [region], () => {
+      return {
+        numberOfChannels: 1,
+        getChannelData: () => samples,
+      } as unknown as AudioBuffer;
+    });
+
+    expect([...left]).toEqual([4, 6, 8]);
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "renders silence for unsupported playback rate %s",
+    (playbackRate) => {
+      const engine = new PlaylistEngine();
+      const left = new Float32Array(2);
+      const right = new Float32Array(2);
+      const region = createRegion("rate", "rate-source", 0, true);
+      region.playbackRate = playbackRate;
+
+      engine.render(left, right, 0, 2, [region], () => createBuffer(1));
+
+      expect([...left]).toEqual([0, 0]);
+      expect([...right]).toEqual([0, 0]);
+    },
+  );
 });
