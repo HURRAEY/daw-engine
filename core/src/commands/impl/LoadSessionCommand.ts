@@ -1,10 +1,6 @@
 import { UndoableCommand } from "../Command";
 import { AudioEngine } from "../../audio/AudioEngine";
 import { SessionSnapshot } from "../../domain/Session";
-import { TrackId, RegionId } from "../../domain/types";
-import { TrackType } from "../../domain/Track";
-import { SendBusId } from "../../domain/SendBus";
-import { TimeDomain } from "../../domain/temporal/types";
 
 import { logger } from "../../utils/Logger";
 /**
@@ -43,7 +39,8 @@ export class LoadSessionCommand implements UndoableCommand {
   }
 
   public async redo(): Promise<void> {
-    await this.execute();
+    const engine = AudioEngine.getInstance();
+    await this.applySnapshot(this.snapshotToLoad, engine);
   }
 
   /**
@@ -54,73 +51,6 @@ export class LoadSessionCommand implements UndoableCommand {
     snapshot: SessionSnapshot,
     engine: AudioEngine,
   ): Promise<void> {
-    const session = engine.session;
-
-    // 1. Remove all existing tracks (fires trackRemoved signals)
-    const existingTrackIds = session.tracks.map((t) => t.id);
-    for (const id of existingTrackIds) {
-      session.removeTrack(id as TrackId);
-    }
-
-    // 2. Remove all existing send buses
-    const existingSendBusIds = session.sendBuses.map((sb) => sb.id);
-    for (const id of existingSendBusIds) {
-      session.removeSendBus(id as SendBusId);
-    }
-
-    // 3. Restore transport state
-    session.tempo = snapshot.tempo;
-    session.timeSignature = snapshot.timeSignature;
-    session.tempoChanged.emit(snapshot.tempo);
-
-    // 4. Restore tracks and regions (fires trackAdded → AudioEngine creates backend track)
-    const { Session: SessionClass } = await import("../../domain/Session");
-    const _restoredSession = SessionClass.fromJSON(snapshot);
-
-    for (const trackData of snapshot.tracks) {
-      const track = session.addTrack(
-        trackData.name,
-        trackData.type as TrackType,
-        trackData.id as TrackId,
-      );
-      track.armed = trackData.armed;
-      track.mute = trackData.mute;
-      track.solo = trackData.solo;
-      if (trackData.recordMode !== undefined) {
-        track.setRecordMode(trackData.recordMode);
-      }
-
-      for (const regionData of trackData.regions) {
-        const { Region } = await import("../../domain/Region");
-        const region = new Region(
-          regionData.id as RegionId,
-          regionData.sourceId,
-          regionData.start,
-          regionData.length,
-          regionData.sourceStart,
-          regionData.name,
-          regionData.layer,
-        );
-        region.gain = regionData.gain;
-        region.muted = regionData.muted;
-        region.opaque = regionData.opaque ?? true;
-        region.fadeIn = regionData.fadeIn;
-        region.fadeOut = regionData.fadeOut;
-        region.playbackRate = regionData.playbackRate ?? 1;
-        region.timeDomain = regionData.timeDomain ?? TimeDomain.AudioTime;
-        track.playlist.addRegion(region);
-      }
-    }
-
-    // 5. Restore send buses (fires sendBusAdded → AudioEngine creates backend send bus)
-    for (const sbData of snapshot.sendBuses) {
-      session.addSendBus(
-        sbData.sourceTrackId as TrackId,
-        sbData.destId,
-        sbData.level,
-        sbData.preFader,
-        sbData.id as SendBusId,
-      );
-    }
+    await engine.restoreSessionFromSnapshot(snapshot);
   }
 }

@@ -406,6 +406,16 @@ export class Route {
     this._panner.setElevation(snapshot.panner?.elevation ?? 0);
     this.restoreProcessorMetadata(this._panner, snapshot.panner);
 
+    this.coreProcessorsRestored.emit({
+      previousProcessors: previousCoreProcessors,
+      currentProcessors: [
+        this._trim,
+        this._fader,
+        this._polarity,
+        this._panner,
+      ],
+    });
+
     [...this._preFaderProcessors, ...this._postFaderProcessors].forEach(
       (processor) => this.removeProcessor(processor.id),
     );
@@ -416,15 +426,6 @@ export class Route {
       this.addProcessor(this.restoreProcessor(processor, sampleRate), "post"),
     );
     this.setCompensationDelay(snapshot.compensationDelay ?? 0);
-    this.coreProcessorsRestored.emit({
-      previousProcessors: previousCoreProcessors,
-      currentProcessors: [
-        this._trim,
-        this._fader,
-        this._polarity,
-        this._panner,
-      ],
-    });
   }
 
   private serializeProcessor(processor: Processor): ProcessorSnapshot {
