@@ -1,5 +1,5 @@
 import { SessionStorage } from "./SessionStorage";
-import { Session } from "../domain/Session";
+import { Session, SessionSnapshot } from "../domain/Session";
 import { Signal } from "../lib/Signal";
 
 import { logger } from "../utils/Logger";
@@ -22,7 +22,8 @@ export class AutoSave {
   private _subscriptions: Array<{ dispose: () => void }> = [];
   private _changeVersion = 0;
   private _lifecycleVersion = 0;
-  private _saveQueues = new Map<string, Promise<void>>();
+  private _sessionSaveQueues = new WeakMap<Session, Promise<void>>();
+  private _sessionIdSaveQueues = new Map<string, Promise<void>>();
 
   /** Emitted after each successful auto-save. */
   public readonly saved = new Signal<Date>();
@@ -95,23 +96,38 @@ export class AutoSave {
   public saveNow(): Promise<void> {
     const requestedSession = this._session;
     if (!requestedSession || !this._dirty) return Promise.resolve();
+    let requestedSnapshot: SessionSnapshot;
+    try {
+      requestedSnapshot = requestedSession.toJSON();
+    } catch (error) {
+      logger.error("AutoSave", "Failed to serialize session:", error);
+      return Promise.resolve();
+    }
     const requestedVersion = this._changeVersion;
     const requestedLifecycleVersion = this._lifecycleVersion;
-    const previousSave =
-      this._saveQueues.get(requestedSession.id) ?? Promise.resolve();
+    const requestedSessionId = requestedSnapshot.id;
+    const previousSessionSave =
+      this._sessionSaveQueues.get(requestedSession) ?? Promise.resolve();
+    const previousSessionIdSave =
+      this._sessionIdSaveQueues.get(requestedSessionId) ?? Promise.resolve();
 
-    const queuedSave = previousSave.then(() =>
+    const queuedSave = Promise.all([
+      previousSessionSave,
+      previousSessionIdSave,
+    ]).then(() =>
       this.saveSession(
         requestedSession,
+        requestedSnapshot,
         requestedVersion,
         requestedLifecycleVersion,
       ),
     );
     const retainedQueue = queuedSave.catch(() => undefined);
-    this._saveQueues.set(requestedSession.id, retainedQueue);
+    this._sessionSaveQueues.set(requestedSession, retainedQueue);
+    this._sessionIdSaveQueues.set(requestedSessionId, retainedQueue);
     void retainedQueue.finally(() => {
-      if (this._saveQueues.get(requestedSession.id) === retainedQueue) {
-        this._saveQueues.delete(requestedSession.id);
+      if (this._sessionIdSaveQueues.get(requestedSessionId) === retainedQueue) {
+        this._sessionIdSaveQueues.delete(requestedSessionId);
       }
     });
     return queuedSave;
@@ -119,6 +135,7 @@ export class AutoSave {
 
   private async saveSession(
     session: Session,
+    snapshot: SessionSnapshot,
     requestedVersion: number,
     requestedLifecycleVersion: number,
   ): Promise<void> {
@@ -132,7 +149,11 @@ export class AutoSave {
 
     try {
       const storage = SessionStorage.getInstance();
-      await storage.saveSession(session);
+      await storage.saveSession({
+        id: snapshot.id,
+        name: snapshot.name,
+        toJSON: () => snapshot,
+      });
       if (
         this._session === session &&
         this._lifecycleVersion === requestedLifecycleVersion &&
