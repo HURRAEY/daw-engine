@@ -454,6 +454,9 @@ export class AudioEngine {
         this.backend.removeMasterProcessor(procId);
         this.syncRoutingSnapshot();
       }),
+      masterBus.processorReordered.connect(() => {
+        this.syncRoutingSnapshot();
+      }),
       masterBus.coreProcessorsRestored.connect(
         ({ previousProcessors, currentProcessors }) => {
           previousProcessors.forEach((processor) => {
@@ -667,6 +670,9 @@ export class AudioEngine {
       }),
       track.route.processorRemoved.connect((processorId: string) => {
         this.backend.removeProcessor(track.id, processorId);
+        this.syncRoutingSnapshot();
+      }),
+      track.route.processorReordered.connect(() => {
         this.syncRoutingSnapshot();
       }),
       track.playlist.regionAdded.connect((region: Region) => {
