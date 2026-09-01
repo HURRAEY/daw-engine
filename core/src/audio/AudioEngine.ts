@@ -66,7 +66,7 @@ export class AudioEngine {
     new Map();
 
   private constructor(backend: AudioProvider) {
-    this.session = new Session(crypto.randomUUID(), "Untitled Session");
+    this.session = new Session("Untitled Session");
     this.backend = backend;
     this.midiInput = MidiInput.getInstance();
 
