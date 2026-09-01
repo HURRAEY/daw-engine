@@ -20,6 +20,9 @@ export class AutoSave {
   private _timerId: ReturnType<typeof setInterval> | null = null;
   private _session: Session | null = null;
   private _subscriptions: Array<{ dispose: () => void }> = [];
+  private _changeVersion = 0;
+  private _lifecycleVersion = 0;
+  private _saveQueues = new Map<string, Promise<void>>();
 
   /** Emitted after each successful auto-save. */
   public readonly saved = new Signal<Date>();
@@ -54,6 +57,8 @@ export class AutoSave {
 
     this._session = session;
     this._dirty = false;
+    this._changeVersion = 0;
+    this._lifecycleVersion++;
     this._lastModified = new Date();
 
     this.subscribeToSessionSignals(session);
@@ -70,6 +75,7 @@ export class AutoSave {
     this.disposeSubscriptions();
     this._session = null;
     this._dirty = false;
+    this._lifecycleVersion++;
   }
 
   /**
@@ -78,6 +84,7 @@ export class AutoSave {
   public markDirty(): void {
     const wasDirty = this._dirty;
     this._dirty = true;
+    this._changeVersion++;
     this._lastModified = new Date();
     if (!wasDirty) this.dirtyChanged.emit(true);
   }
@@ -85,17 +92,57 @@ export class AutoSave {
   /**
    * Force an immediate save (e.g. on window beforeunload).
    */
-  public async saveNow(): Promise<void> {
-    if (!this._session) return;
-    if (!this._dirty) return;
+  public saveNow(): Promise<void> {
+    const requestedSession = this._session;
+    if (!requestedSession || !this._dirty) return Promise.resolve();
+    const requestedVersion = this._changeVersion;
+    const requestedLifecycleVersion = this._lifecycleVersion;
+    const previousSave =
+      this._saveQueues.get(requestedSession.id) ?? Promise.resolve();
+
+    const queuedSave = previousSave.then(() =>
+      this.saveSession(
+        requestedSession,
+        requestedVersion,
+        requestedLifecycleVersion,
+      ),
+    );
+    const retainedQueue = queuedSave.catch(() => undefined);
+    this._saveQueues.set(requestedSession.id, retainedQueue);
+    void retainedQueue.finally(() => {
+      if (this._saveQueues.get(requestedSession.id) === retainedQueue) {
+        this._saveQueues.delete(requestedSession.id);
+      }
+    });
+    return queuedSave;
+  }
+
+  private async saveSession(
+    session: Session,
+    requestedVersion: number,
+    requestedLifecycleVersion: number,
+  ): Promise<void> {
+    if (
+      this._session !== session ||
+      this._lifecycleVersion !== requestedLifecycleVersion ||
+      !this._dirty
+    ) {
+      return;
+    }
 
     try {
       const storage = SessionStorage.getInstance();
-      await storage.saveSession(this._session);
-      this._dirty = false;
-      this.dirtyChanged.emit(false);
-      this.saved.emit(new Date());
-      logger.debug("AutoSave", `Session saved: ${this._session.name}`);
+      await storage.saveSession(session);
+      if (
+        this._session === session &&
+        this._lifecycleVersion === requestedLifecycleVersion &&
+        this._changeVersion === requestedVersion
+      ) {
+        this._dirty = false;
+        this.dirtyChanged.emit(false);
+        this.saved.emit(new Date());
+      }
+      logger.debug("AutoSave", `Session saved: ${session.name}`);
     } catch (err) {
       logger.error("AutoSave", "Failed to save session:", err);
     }
