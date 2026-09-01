@@ -140,12 +140,47 @@ export class AudioEngine {
   }
 
   public async setBackend(backend: AudioProvider): Promise<void> {
+    if (this.session.sources.size > 0) {
+      await this.addSessionSourcesToBackend(this.session, backend);
+    }
+
+    const previousBackend = this.backend;
+    if (previousBackend === backend) {
+      this.isBackendTransportRunning = false;
+      this.syncSessionGraphToBackend();
+      return;
+    }
+
+    const previousTransportRunning = this.isBackendTransportRunning;
+    this.backend = backend;
+    try {
+      this.syncSessionGraphToBackend();
+    } catch (error) {
+      this.backend = previousBackend;
+      this.isBackendTransportRunning = previousTransportRunning;
+      this.stopBackendQuietly(backend);
+      throw error;
+    }
+
+    this.backend = previousBackend;
+    try {
+      previousBackend.stop();
+    } catch (error) {
+      this.stopBackendQuietly(backend);
+      this.isBackendTransportRunning = previousTransportRunning;
+      throw error;
+    }
+
     this.backend = backend;
     this.isBackendTransportRunning = false;
-    if (this.session.sources.size > 0) {
-      await this.addSessionSourcesToBackend(this.session);
+  }
+
+  private stopBackendQuietly(backend: AudioProvider): void {
+    try {
+      backend.stop();
+    } catch {
+      // Preserve the replacement error because backend cleanup is best-effort.
     }
-    this.syncSessionGraphToBackend();
   }
 
   /**
@@ -244,10 +279,13 @@ export class AudioEngine {
     this.syncRoutingSnapshot();
   }
 
-  private async addSessionSourcesToBackend(session: Session): Promise<void> {
+  private async addSessionSourcesToBackend(
+    session: Session,
+    backend: AudioProvider = this.backend,
+  ): Promise<void> {
     await Promise.all(
       Array.from(session.sources.values(), (source) =>
-        this.backend.addSource(source),
+        backend.addSource(source),
       ),
     );
   }
