@@ -7,10 +7,12 @@ import { Session } from "../domain/Session";
 import { Source } from "../domain/Source";
 import { TrackType } from "../domain/Track";
 import { MotionState } from "../domain/TransportFSM";
+import { GainProcessor } from "../processing/GainProcessor";
 import { PluginInsert } from "../processing/PluginInsert";
 import { PluginManager } from "../plugins/PluginManager";
 import { AudioEngine } from "./AudioEngine";
 import type { AudioProvider } from "./AudioProvider";
+import type { RoutingSnapshot } from "./engine/RoutingSnapshot";
 
 interface AudioProviderStub {
   readonly provider: AudioProvider;
@@ -222,6 +224,163 @@ describe("AudioEngine lifecycle", () => {
       expect.arrayContaining([expect.objectContaining({ id: "track-1" })]),
     );
     expect(Object.isFrozen(snapshot)).toBe(true);
+    engine.dispose();
+  });
+
+  it("publishes the updated track processor order without recreating processors", () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const track = engine.session.addTrack("audio-track", undefined, "track-1");
+    const firstProcessor = new GainProcessor("first-processor", "First");
+    const secondProcessor = new GainProcessor("second-processor", "Second");
+    track.route.addProcessor(firstProcessor, "pre");
+    track.route.addProcessor(secondProcessor, "pre");
+    const applyRoutingSnapshot = providerStub.getMethod("applyRoutingSnapshot");
+    const addProcessor = providerStub.getMethod("addProcessor");
+    const removeProcessor = providerStub.getMethod("removeProcessor");
+    applyRoutingSnapshot.mockClear();
+    addProcessor.mockClear();
+    removeProcessor.mockClear();
+
+    track.route.reorderProcessor(secondProcessor.id, 0);
+
+    expect(applyRoutingSnapshot).toHaveBeenCalledTimes(1);
+    const snapshot = applyRoutingSnapshot.mock.lastCall?.[0] as
+      RoutingSnapshot | undefined;
+    const trackNode = snapshot?.nodes.find((node) => node.id === track.id);
+    expect(
+      trackNode?.processors.map((processor) => ({
+        id: processor.id,
+        index: processor.index,
+      })),
+    ).toEqual(
+      track.route.processors.map((processor, index) => ({
+        id: processor.id,
+        index,
+      })),
+    );
+    expect(addProcessor).not.toHaveBeenCalled();
+    expect(removeProcessor).not.toHaveBeenCalled();
+    engine.dispose();
+  });
+
+  it("publishes the updated master processor order without recreating processors", () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const firstProcessor = new GainProcessor("master-first", "First");
+    const secondProcessor = new GainProcessor("master-second", "Second");
+    engine.session.masterBus.addProcessor(firstProcessor, "pre");
+    engine.session.masterBus.addProcessor(secondProcessor, "pre");
+    const applyRoutingSnapshot = providerStub.getMethod("applyRoutingSnapshot");
+    const addMasterProcessor = providerStub.getMethod("addMasterProcessor");
+    const removeMasterProcessor = providerStub.getMethod(
+      "removeMasterProcessor",
+    );
+    applyRoutingSnapshot.mockClear();
+    addMasterProcessor.mockClear();
+    removeMasterProcessor.mockClear();
+
+    engine.session.masterBus.reorderProcessor(secondProcessor.id, 0);
+
+    expect(applyRoutingSnapshot).toHaveBeenCalledTimes(1);
+    const snapshot = applyRoutingSnapshot.mock.lastCall?.[0] as
+      RoutingSnapshot | undefined;
+    const masterNode = snapshot?.nodes.find(
+      (node) => node.id === engine.session.masterBus.id,
+    );
+    expect(
+      masterNode?.processors.map((processor) => ({
+        id: processor.id,
+        index: processor.index,
+      })),
+    ).toEqual(
+      engine.session.masterBus.processors.map((processor, index) => ({
+        id: processor.id,
+        index,
+      })),
+    );
+    expect(addMasterProcessor).not.toHaveBeenCalled();
+    expect(removeMasterProcessor).not.toHaveBeenCalled();
+    engine.dispose();
+  });
+
+  it("does not publish a routing snapshot for a no-op processor reorder", () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const track = engine.session.addTrack("audio-track", undefined, "track-1");
+    const processor = new GainProcessor("processor", "Processor");
+    track.route.addProcessor(processor, "pre");
+    const applyRoutingSnapshot = providerStub.getMethod("applyRoutingSnapshot");
+    applyRoutingSnapshot.mockClear();
+
+    track.route.reorderProcessor(processor.id, 0);
+
+    expect(applyRoutingSnapshot).not.toHaveBeenCalled();
+    engine.dispose();
+  });
+
+  it("disconnects processor reorder signals after removing a track", () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const track = engine.session.addTrack("audio-track", undefined, "track-1");
+    const firstProcessor = new GainProcessor("first-processor", "First");
+    const secondProcessor = new GainProcessor("second-processor", "Second");
+    track.route.addProcessor(firstProcessor, "pre");
+    track.route.addProcessor(secondProcessor, "pre");
+    engine.session.removeTrack(track.id);
+    const applyRoutingSnapshot = providerStub.getMethod("applyRoutingSnapshot");
+    applyRoutingSnapshot.mockClear();
+
+    track.route.reorderProcessor(secondProcessor.id, 0);
+
+    expect(applyRoutingSnapshot).not.toHaveBeenCalled();
+    engine.dispose();
+  });
+
+  it("rebinds processor reorder signals to restored tracks", async () => {
+    const providerStub = createAudioProviderStub();
+    const engine = AudioEngine.create(providerStub.provider);
+    const previousTrack = engine.session.addTrack(
+      "previous-track",
+      undefined,
+      "previous-track",
+    );
+    const previousFirst = new GainProcessor("previous-first", "First");
+    const previousSecond = new GainProcessor("previous-second", "Second");
+    previousTrack.route.addProcessor(previousFirst, "pre");
+    previousTrack.route.addProcessor(previousSecond, "pre");
+    const target = new Session("target", "target");
+    const targetTrack = target.addTrack(
+      "target-track",
+      undefined,
+      "target-track",
+    );
+    targetTrack.route.addProcessor(new GainProcessor("target-first", "First"));
+    targetTrack.route.addProcessor(
+      new GainProcessor("target-second", "Second"),
+    );
+
+    await engine.restoreSessionFromSnapshot(target.toJSON());
+
+    const restoredTrack = engine.session.getTrack(targetTrack.id);
+    if (!restoredTrack) throw new Error("restored track is unavailable");
+    const applyRoutingSnapshot = providerStub.getMethod("applyRoutingSnapshot");
+    applyRoutingSnapshot.mockClear();
+
+    previousTrack.route.reorderProcessor(previousSecond.id, 0);
+    expect(applyRoutingSnapshot).not.toHaveBeenCalled();
+
+    restoredTrack.route.reorderProcessor("target-second", 0);
+
+    expect(applyRoutingSnapshot).toHaveBeenCalledTimes(1);
+    const snapshot = applyRoutingSnapshot.mock.lastCall?.[0] as
+      RoutingSnapshot | undefined;
+    const trackNode = snapshot?.nodes.find(
+      (node) => node.id === restoredTrack.id,
+    );
+    expect(trackNode?.processors.map((processor) => processor.id)).toEqual(
+      restoredTrack.route.processors.map((processor) => processor.id),
+    );
     engine.dispose();
   });
 
