@@ -22,6 +22,11 @@ export class PlaylistEngine {
     regions: RegionDTO[],
     getBuffer: (url: string) => AudioBuffer | null,
   ): void {
+    const outputsShareSampleRange = this.validateOutputSampleRanges(
+      outputLeft,
+      outputRight,
+    );
+
     // 1. Find active regions in this block
     const endFrame = startFrame + numFrames;
     const activeRegions = regions.filter(
@@ -57,6 +62,7 @@ export class PlaylistEngine {
           getBuffer,
           covered,
           layerCoverage,
+          outputsShareSampleRange,
         );
         index++;
       }
@@ -75,6 +81,7 @@ export class PlaylistEngine {
     getBuffer: (url: string) => AudioBuffer | null,
     covered: Uint8Array,
     layerCoverage: Uint8Array,
+    outputsShareSampleRange: boolean,
   ) {
     const buffer = getBuffer(region.sourceId);
     if (!buffer) return;
@@ -99,7 +106,6 @@ export class PlaylistEngine {
     const maxOutputFrames =
       maxSourceFrames >= 0 ? Math.floor(maxSourceFrames / playbackRate) + 1 : 0;
     const clampedLength = Math.min(length, maxOutputFrames);
-
     for (let i = 0; i < clampedLength; i++) {
       const outIdx = outOffset + i;
 
@@ -144,12 +150,42 @@ export class PlaylistEngine {
 
       const gain = region.gain * fadeGain;
 
-      outL[outIdx] += interpolatedL * gain;
-      outR[outIdx] += interpolatedR * gain;
+      if (outputsShareSampleRange) {
+        const monoSample =
+          buffer.numberOfChannels > 1
+            ? (interpolatedL + interpolatedR) / 2
+            : interpolatedL;
+        outL[outIdx] += monoSample * gain;
+      } else {
+        outL[outIdx] += interpolatedL * gain;
+        outR[outIdx] += interpolatedR * gain;
+      }
 
       if (region.opaque !== false) {
         layerCoverage[outIdx] = 1;
       }
     }
+  }
+
+  private validateOutputSampleRanges(
+    outputLeft: Float32Array,
+    outputRight: Float32Array,
+  ): boolean {
+    if (outputLeft.buffer !== outputRight.buffer) return false;
+
+    const rangesMatch =
+      outputLeft.byteOffset === outputRight.byteOffset &&
+      outputLeft.byteLength === outputRight.byteLength;
+    if (rangesMatch) return true;
+
+    const leftEnd = outputLeft.byteOffset + outputLeft.byteLength;
+    const rightEnd = outputRight.byteOffset + outputRight.byteLength;
+    const rangesOverlap =
+      outputLeft.byteOffset < rightEnd && outputRight.byteOffset < leftEnd;
+    if (rangesOverlap) {
+      throw new RangeError("Output channel sample ranges must not overlap");
+    }
+
+    return false;
   }
 }

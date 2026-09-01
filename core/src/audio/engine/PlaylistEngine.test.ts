@@ -154,4 +154,102 @@ describe("PlaylistEngine layer rendering", () => {
       expect([...right]).toEqual([0, 0]);
     },
   );
+
+  it("does not add a mono output twice when both channels use the same array", () => {
+    const engine = new PlaylistEngine();
+    const output = new Float32Array(4);
+
+    engine.render(
+      output,
+      output,
+      0,
+      4,
+      [createRegion("mono", "lower-source", 0, true)],
+      () => createBuffer(1),
+    );
+
+    expect([...output]).toEqual([1, 1, 1, 1]);
+  });
+
+  it("does not add a mono output twice through equivalent array views", () => {
+    const engine = new PlaylistEngine();
+    const samples = new ArrayBuffer(Float32Array.BYTES_PER_ELEMENT * 4);
+    const left = new Float32Array(samples);
+    const right = new Float32Array(samples);
+
+    engine.render(
+      left,
+      right,
+      0,
+      4,
+      [createRegion("mono", "lower-source", 0, true)],
+      () => createBuffer(1),
+    );
+
+    expect([...left]).toEqual([1, 1, 1, 1]);
+  });
+
+  it("downmixes stereo input when both output channels share one range", () => {
+    const engine = new PlaylistEngine();
+    const output = new Float32Array(4);
+    const left = new Float32Array([2, 2, 2, 2, 2]);
+    const right = new Float32Array([4, 4, 4, 4, 4]);
+
+    engine.render(
+      output,
+      output,
+      0,
+      4,
+      [createRegion("stereo", "stereo-source", 0, true)],
+      () =>
+        ({
+          numberOfChannels: 2,
+          getChannelData: (channel: number) => (channel === 0 ? left : right),
+        }) as unknown as AudioBuffer,
+    );
+
+    expect([...output]).toEqual([3, 3, 3, 3]);
+  });
+
+  it("rejects partially overlapping output views before clearing them", () => {
+    const engine = new PlaylistEngine();
+    const samples = new Float32Array([1, 1, 1, 1, 1]);
+    const left = new Float32Array(samples.buffer, 0, 4);
+    const right = new Float32Array(
+      samples.buffer,
+      Float32Array.BYTES_PER_ELEMENT,
+      4,
+    );
+
+    expect(() =>
+      engine.render(
+        left,
+        right,
+        0,
+        4,
+        [createRegion("mono", "lower-source", 0, true)],
+        () => createBuffer(1),
+      ),
+    ).toThrow(new RangeError("Output channel sample ranges must not overlap"));
+    expect([...samples]).toEqual([1, 1, 1, 1, 1]);
+  });
+
+  it("rejects same-offset output views with different lengths", () => {
+    const engine = new PlaylistEngine();
+    const samples = new Float32Array([1, 1, 1, 1]);
+    const left = new Float32Array(samples.buffer, 0, 4);
+    const right = new Float32Array(samples.buffer, 0, 3);
+
+    expect(() =>
+      engine.render(
+        left,
+        right,
+        0,
+        3,
+        [createRegion("mono", "lower-source", 0, true)],
+        () => createBuffer(1),
+      ),
+    ).toThrow(new RangeError("Output channel sample ranges must not overlap"));
+    expect([...samples]).toEqual([1, 1, 1, 1]);
+  });
 });
