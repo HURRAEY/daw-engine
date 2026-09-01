@@ -4,8 +4,17 @@ export type IOId = string;
 
 export type IODataType = "audio" | "midi";
 
+export interface IOSnapshot {
+  id: IOId;
+  name: string;
+  dataType: IODataType;
+  connections: IOId[];
+  latency: number;
+  bundleName?: string;
+}
+
 export class IO {
-  public readonly id: IOId;
+  public id: IOId;
   public name: string;
   public dataType: IODataType;
 
@@ -79,5 +88,25 @@ export class IO {
 
   public isConnectedTo(targetId: IOId): boolean {
     return this._connections.includes(targetId);
+  }
+
+  public toJSON(): IOSnapshot {
+    return {
+      id: this.id,
+      name: this.name,
+      dataType: this.dataType,
+      connections: [...this._connections],
+      latency: this._latency,
+      bundleName: this._bundleName,
+    };
+  }
+
+  public restoreFromJSON(snapshot: IOSnapshot): void {
+    this.id = snapshot.id;
+    this.name = snapshot.name;
+    this.dataType = snapshot.dataType;
+    this._connections = [...(snapshot.connections ?? [])];
+    this._latency = snapshot.latency ?? 0;
+    this._bundleName = snapshot.bundleName;
   }
 }

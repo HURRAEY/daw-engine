@@ -83,6 +83,10 @@ export class GridSettings {
     return this._snapToGrid && this._snapMode !== SnapMode.NO_SNAP;
   }
 
+  public get snapToGridEnabled(): boolean {
+    return this._snapToGrid;
+  }
+
   public get bpm(): number {
     return this._bpm;
   }

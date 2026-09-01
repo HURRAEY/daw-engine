@@ -151,6 +151,13 @@ export class TempoMap {
     this._meterEvents.push({ frame: 0, beatsPerBar: 4, beatValue: 4 });
   }
 
+  public restoreFrom(source: TempoMap): void {
+    this.sampleRate = source.sampleRate;
+    this.events = source.events.map((event) => ({ ...event }));
+    this._meterEvents = source._meterEvents.map((event) => ({ ...event }));
+    this.changed.emit();
+  }
+
   // ─── Tempo Events ────────────────────────────────────────────────────────
 
   /**

@@ -1,7 +1,7 @@
 import { Track, TrackType } from "./Track";
 import { MonitorMode } from "./MonitorMode";
-import { Route } from "./Route";
-import { Source } from "./Source";
+import { Route, RouteSnapshot } from "./Route";
+import { Source, SourceAnalysisData } from "./Source";
 import { Range } from "./Range";
 import { Region } from "./Region";
 import { MidiRegion, MidiRegionSnapshot } from "./MidiRegion";
@@ -21,7 +21,7 @@ import { Signal } from "../lib/Signal";
 import { IO } from "../processing/IO";
 import { ExportConfig } from "./ExportConfig";
 import { ExportStatus } from "./ExportStatus";
-import { GridSettings } from "./GridSettings";
+import { GridSettings, GridType, SnapMode } from "./GridSettings";
 import { TempoMap } from "./temporal/TempoMap";
 import { TimeDomain } from "./temporal/types";
 import { MixerSceneManager, MixerSceneSnapshot } from "./MixerScene";
@@ -34,10 +34,13 @@ import { SidechainConfig, SidechainConfigSnapshot } from "./SidechainConfig";
 import { Take, TakeLane, TakeSnapshot } from "./Take";
 import { TrackGroupLinkingService } from "./TrackGroupLinkingService";
 import { RecordMode } from "./RecordMode";
+import { FadeShape } from "./FadeEnvelope";
+import { VideoMetadata } from "./VideoMetadata";
+import { Crossfade, CrossfadeType, FadeCurve } from "./Crossfade";
 
 import { logger } from "../utils/Logger";
 export class Session {
-  public readonly id: string;
+  public id: string;
   public name: string;
   public sampleRate: SampleRate;
 
@@ -140,6 +143,7 @@ export class Session {
   public readonly rippleEditChanged = new Signal<boolean>();
   public readonly regionGroupAdded = new Signal<RegionGroup>();
   public readonly regionGroupRemoved = new Signal<RegionGroupId>();
+  public readonly restored = new Signal<void>();
 
   public isRecording: boolean = false;
   public metronomeEnabled: boolean = false;
@@ -592,6 +596,7 @@ export class Session {
   // Source Management
   private _sources: Map<SourceId, Source> = new Map();
   public readonly sourceAdded = new Signal<Source>();
+  public readonly sourceRemoved = new Signal<SourceId>();
 
   public addSource(source: Source) {
     if (!this._sources.has(source.id)) {
@@ -603,7 +608,7 @@ export class Session {
   public removeSource(id: SourceId) {
     if (this._sources.has(id)) {
       this._sources.delete(id);
-      // emit sourceRemoved?
+      this.sourceRemoved.emit(id);
     }
   }
 
@@ -1235,12 +1240,50 @@ export class Session {
       sampleRate: this.sampleRate,
       tempo: this.tempo,
       timeSignature: this.timeSignature,
+      timecodeFps: this.timecodeFps,
       transportFrame: this.transportFrame,
+      recordingStartFrame: this.recordingStartFrame,
+      metronomeEnabled: this.metronomeEnabled,
+      metronomeVolume: this.metronomeVolume,
+      groupSelectEnabled: this.groupSelectEnabled,
+      sources: Array.from(this._sources.values()).map((source) => {
+        const analysisData = source.getAnalysisData();
+        return {
+          id: source.id,
+          name: source.name,
+          url: source.url,
+          duration: source.duration,
+          sampleRate: source.sampleRate,
+          channelCount: source.channelCount,
+          videoMetadata: source.videoMetadata,
+          flags: source.flags,
+          takeId: source.takeId,
+          ancestorName: source.ancestorName,
+          naturalPosition: source.naturalPosition,
+          transients: [...source.transients],
+          cueMarkers: Array.from(source.cueMarkers.entries()),
+          xrunPositions: [...source.xrunPositions],
+          capturedFor: source.capturedFor,
+          analysisData: analysisData
+            ? { ...analysisData, transients: [...analysisData.transients] }
+            : null,
+        };
+      }),
+      masterBus: this.masterBus.toJSON(),
+      gridSettings: {
+        gridType: this.gridSettings.gridType,
+        snapMode: this.gridSettings.snapMode,
+        snapToGrid: this.gridSettings.snapToGridEnabled,
+        bpm: this.gridSettings.bpm,
+        timeSignatureNumerator: this.gridSettings.timeSignatureNumerator,
+        timeSignatureDenominator: this.gridSettings.timeSignatureDenominator,
+      },
       tracks: this.tracks.map((t) => ({
         id: t.id,
         name: t.name,
         type: t.type,
         armed: t.armed,
+        monitor: t.monitor,
         mute: t.mute,
         solo: t.solo,
         color: t.color,
@@ -1250,6 +1293,15 @@ export class Session {
         trimGain: t.trimGain,
         comment: t.comment,
         recordMode: t.recordMode,
+        frozen: t.frozen,
+        frozenSourceId: t.frozenSourceId,
+        parentTrackId: t.parentTrackId,
+        groupId: t.groupId,
+        isCollapsed: t.isCollapsed,
+        alignStyle: t.getAlignStyle(),
+        trackMode: t.getTrackMode(),
+        bounceProgress: t.bounceProgress,
+        route: t.route.toJSON(),
         regions: t.playlist.getRegions().map((r) => ({
           id: r.id,
           sourceId: r.sourceId,
@@ -1263,9 +1315,26 @@ export class Session {
           opaque: r.opaque,
           fadeIn: r.fadeIn,
           fadeOut: r.fadeOut,
+          fadeInShape: r.fadeInShape,
+          fadeOutShape: r.fadeOutShape,
           playbackRate: r.playbackRate,
+          stretch: r.stretch,
+          pitchSemitones: r.pitchSemitones,
+          syncPosition: r.syncPosition,
+          transients: [...r.transients],
           timeDomain: r.timeDomain,
           locked: r.locked,
+        })),
+        crossfades: t.playlist.getCrossfades().map((crossfade) => ({
+          id: crossfade.id,
+          inRegionId: crossfade.inRegionId,
+          outRegionId: crossfade.outRegionId,
+          position: crossfade.position,
+          length: crossfade.length,
+          type: crossfade.type,
+          fadeInCurve: crossfade.fadeInCurve,
+          fadeOutCurve: crossfade.fadeOutCurve,
+          active: crossfade.active,
         })),
         midiRegions: t.playlist.getMidiRegions().map((mr) => mr.toJSON()),
       })),
@@ -1274,6 +1343,7 @@ export class Session {
         name: r.name,
         start: r.start,
         end: r.end,
+        color: r.color,
       })),
       sendBuses: Array.from(this._sendBuses.values()).map((sb) => ({
         id: sb.id,
@@ -1296,6 +1366,7 @@ export class Session {
       punchEnabled: this.punchEnabled,
       preRollBars: this.preRollBars,
       loopRecordingEnabled: this.loopRecordingEnabled,
+      loopRecordingTakeCount: this.loopRecordingTakeCount,
       rippleEdit: this.rippleEdit,
       regionGroups: Array.from(this._regionGroups.values()).map((g) => ({
         id: g.id,
@@ -1307,6 +1378,11 @@ export class Session {
         bpm: e.bpm,
         timeSigNum: e.timeSigNum,
         timeSigDen: e.timeSigDen,
+      })),
+      meterMapEvents: this.tempoMap.getAllMeterEvents().map((e) => ({
+        frame: e.frame,
+        beatsPerBar: e.beatsPerBar,
+        beatValue: e.beatValue,
       })),
       mixerScenes: this.mixerSceneManager.toJSON(),
       trackGroups2: Array.from(this._trackGroups.values()).map((g) =>
@@ -1337,7 +1413,45 @@ export class Session {
     );
     session.tempo = snapshot.tempo;
     session.timeSignature = snapshot.timeSignature;
+    session.timecodeFps = snapshot.timecodeFps ?? 30;
     session.transportFrame = snapshot.transportFrame;
+    session.recordingStartFrame = snapshot.recordingStartFrame ?? 0;
+    session.metronomeEnabled = snapshot.metronomeEnabled ?? false;
+    session.metronomeVolume = snapshot.metronomeVolume ?? 1;
+    session.groupSelectEnabled = snapshot.groupSelectEnabled ?? true;
+
+    for (const sourceData of snapshot.sources ?? []) {
+      const source = new Source(
+        sourceData.id,
+        sourceData.name,
+        sourceData.url,
+        sourceData.duration,
+        sourceData.sampleRate ?? snapshot.sampleRate,
+        sourceData.channelCount ?? 2,
+        sourceData.videoMetadata,
+      );
+      source.flags = sourceData.flags ?? 0;
+      source.takeId = sourceData.takeId;
+      source.ancestorName = sourceData.ancestorName;
+      source.naturalPosition = sourceData.naturalPosition;
+      source.transients = [...(sourceData.transients ?? [])];
+      source.cueMarkers = new Map(sourceData.cueMarkers ?? []);
+      source.xrunPositions = [...(sourceData.xrunPositions ?? [])];
+      source.capturedFor = sourceData.capturedFor;
+      if (sourceData.analysisData) {
+        source.setAnalysisData({
+          ...sourceData.analysisData,
+          transients: [...(sourceData.analysisData.transients ?? [])],
+        });
+      }
+      session.addSource(source);
+    }
+
+    if (snapshot.masterBus) {
+      session._unsubscribeFromRouteLatency(session.masterBus.id);
+      session.masterBus.restoreFromJSON(snapshot.masterBus, session.sampleRate);
+      session._subscribeToRouteLatency(session.masterBus);
+    }
 
     // Restore Tracks + Regions
     for (const trackData of snapshot.tracks) {
@@ -1347,6 +1461,7 @@ export class Session {
         trackData.id as TrackId,
       );
       track.armed = trackData.armed;
+      track.monitor = trackData.monitor ?? false;
       track.mute = trackData.mute;
       track.solo = trackData.solo;
       if (trackData.color) track.color = trackData.color;
@@ -1359,6 +1474,23 @@ export class Session {
       if (trackData.comment !== undefined) track.comment = trackData.comment;
       if (trackData.recordMode !== undefined) {
         track.setRecordMode(trackData.recordMode);
+      }
+      track.frozen = trackData.frozen ?? false;
+      track.frozenSourceId = trackData.frozenSourceId ?? null;
+      track.parentTrackId = trackData.parentTrackId ?? null;
+      track.groupId = trackData.groupId ?? null;
+      track.isCollapsed = trackData.isCollapsed ?? false;
+      if (trackData.alignStyle) {
+        track.setAlignStyle(trackData.alignStyle);
+      }
+      if (trackData.trackMode) {
+        track.setTrackMode(trackData.trackMode);
+      }
+      track.setBounceProgress(trackData.bounceProgress ?? 0);
+      if (trackData.route) {
+        session._unsubscribeFromRouteLatency(track.route.id);
+        track.route.restoreFromJSON(trackData.route, session.sampleRate);
+        session._subscribeToRouteLatency(track.route);
       }
 
       for (const regionData of trackData.regions) {
@@ -1376,10 +1508,36 @@ export class Session {
         region.opaque = regionData.opaque ?? true;
         region.fadeIn = regionData.fadeIn;
         region.fadeOut = regionData.fadeOut;
-        region.playbackRate = regionData.playbackRate;
-        region.timeDomain = regionData.timeDomain;
+        region.fadeInShape = regionData.fadeInShape ?? FadeShape.EQUAL_POWER;
+        region.fadeOutShape = regionData.fadeOutShape ?? FadeShape.EQUAL_POWER;
+        region.playbackRate = regionData.playbackRate ?? 1;
+        region.stretch = regionData.stretch ?? 1;
+        region.pitchSemitones = regionData.pitchSemitones ?? 0;
+        region.syncPosition = regionData.syncPosition ?? null;
+        region.transients = [...(regionData.transients ?? [])];
+        region.timeDomain = regionData.timeDomain ?? TimeDomain.AudioTime;
         if (regionData.locked) region.locked = regionData.locked;
         track.playlist.addRegion(region);
+      }
+
+      if (trackData.crossfades) {
+        track.playlist
+          .getCrossfades()
+          .forEach((crossfade) => track.playlist.removeCrossfade(crossfade.id));
+        for (const crossfadeData of trackData.crossfades) {
+          const crossfade = new Crossfade(
+            crossfadeData.id,
+            crossfadeData.inRegionId as RegionId,
+            crossfadeData.outRegionId as RegionId,
+            crossfadeData.position,
+            crossfadeData.length,
+            crossfadeData.type,
+            crossfadeData.fadeInCurve,
+            crossfadeData.fadeOutCurve,
+          );
+          crossfade.setActive(crossfadeData.active);
+          track.playlist.addCrossfade(crossfade);
+        }
       }
 
       // Restore MIDI Regions
@@ -1398,6 +1556,7 @@ export class Session {
         rangeData.name,
         rangeData.start,
         rangeData.end,
+        rangeData.color,
       );
       session._ranges.set(range.id, range);
     }
@@ -1412,6 +1571,7 @@ export class Session {
         sbData.preFader,
       );
       session._sendBuses.set(sb.id, sb);
+      sb.setActive(sbData.active ?? true);
     }
 
     // Restore Markers
@@ -1434,6 +1594,7 @@ export class Session {
     session.punchEnabled = snapshot.punchEnabled ?? false;
     session.preRollBars = snapshot.preRollBars ?? 0;
     session.loopRecordingEnabled = snapshot.loopRecordingEnabled ?? false;
+    session.loopRecordingTakeCount = snapshot.loopRecordingTakeCount ?? 0;
     session.rippleEdit = snapshot.rippleEdit ?? false;
 
     // Restore Region Groups
@@ -1462,6 +1623,29 @@ export class Session {
         );
       }
     }
+    if (snapshot.meterMapEvents) {
+      for (const eventData of snapshot.meterMapEvents) {
+        session.tempoMap.addMeterChange(
+          eventData.frame,
+          eventData.beatsPerBar,
+          eventData.beatValue,
+        );
+      }
+    }
+
+    const gridSettings = snapshot.gridSettings;
+    session.gridSettings.setGridType(
+      gridSettings?.gridType ?? GridType.BEAT_1_4,
+    );
+    session.gridSettings.setSnapMode(
+      gridSettings?.snapMode ?? SnapMode.SNAP_TO_GRID,
+    );
+    session.gridSettings.setSnapToGrid(gridSettings?.snapToGrid ?? true);
+    session.gridSettings.setBPM(gridSettings?.bpm ?? snapshot.tempo);
+    session.gridSettings.setTimeSignature(
+      gridSettings?.timeSignatureNumerator ?? snapshot.timeSignature[0],
+      gridSettings?.timeSignatureDenominator ?? snapshot.timeSignature[1],
+    );
 
     // Restore Mixer Scenes
     if (snapshot.mixerScenes) {
@@ -1514,6 +1698,131 @@ export class Session {
 
     return session;
   }
+
+  public restoreFromJSON(snapshot: SessionSnapshot): void {
+    const restored = Session.fromJSON(snapshot);
+    restored._linkingService?.dispose();
+    restored._routeLatencySubs.forEach((subscription) =>
+      subscription.dispose(),
+    );
+    restored._routeLatencySubs.clear();
+    restored._markerChangeSubscriptions.forEach((subscription) =>
+      subscription.dispose(),
+    );
+    restored._markerChangeSubscriptions.clear();
+    restored._sidechainSubscriptions.forEach((subscriptions) =>
+      subscriptions.forEach((subscription) => subscription.dispose()),
+    );
+    restored._sidechainSubscriptions.clear();
+
+    this.tracks.forEach((track) => this.removeTrack(track.id));
+    this.sources.forEach((source) => this.removeSource(source.id));
+    this.ranges.forEach((range) => this.removeRange(range.id));
+    this.sendBuses.forEach((sendBus) => this.removeSendBus(sendBus.id));
+    this.markers.forEach((marker) => this.removeMarker(marker.id));
+    this.regionGroups.forEach((group) => this.ungroupRegions(group.id));
+    this.trackGroups.forEach((group) => this.removeTrackGroup(group.id));
+    this.cdMarkers.forEach((marker) => this.removeCDMarker(marker.id));
+    this.vcaTracks.forEach((vca) => this.removeVCATrack(vca.id));
+    this.sidechainConfigs.forEach((config) =>
+      this.removeSidechainConfig(config.id),
+    );
+    Array.from(this._takeLanes.keys()).forEach((id) => this.removeTakeLane(id));
+
+    this.id = restored.id;
+    this.name = restored.name;
+    this.sampleRate = restored.sampleRate;
+    this.tempo = restored.tempo;
+    this.timeSignature = [...restored.timeSignature];
+    this.timecodeFps = restored.timecodeFps;
+    this.transportFrame = restored.transportFrame;
+    this.recordingStartFrame = restored.recordingStartFrame;
+    this.loopRangeId = restored.loopRangeId;
+    this.loopEnabled = restored.loopEnabled;
+    this.punchRangeId = restored.punchRangeId;
+    this.punchEnabled = restored.punchEnabled;
+    this.loopRecordingEnabled = restored.loopRecordingEnabled;
+    this.loopRecordingTakeCount = restored.loopRecordingTakeCount;
+    this.preRollBars = restored.preRollBars;
+    this.rippleEdit = restored.rippleEdit;
+    this.groupSelectEnabled = restored.groupSelectEnabled;
+    this.metronomeEnabled = restored.metronomeEnabled;
+    this.metronomeVolume = restored.metronomeVolume;
+    this._selectedRegionIds.clear();
+    this.selectionChanged.emit(new Set());
+
+    this._unsubscribeFromRouteLatency(this.masterBus.id);
+    this.masterBus.restoreFromJSON(
+      restored.masterBus.toJSON(),
+      restored.sampleRate,
+    );
+    this._subscribeToRouteLatency(this.masterBus);
+    this.gridSettings.setGridType(restored.gridSettings.gridType);
+    this.gridSettings.setSnapMode(restored.gridSettings.snapMode);
+    this.gridSettings.setSnapToGrid(restored.gridSettings.snapToGridEnabled);
+    this.gridSettings.setBPM(restored.gridSettings.bpm);
+    this.gridSettings.setTimeSignature(
+      restored.gridSettings.timeSignatureNumerator,
+      restored.gridSettings.timeSignatureDenominator,
+    );
+    this.tempoMap.restoreFrom(restored.tempoMap);
+    this.mixerSceneManager.loadFromJSON(restored.mixerSceneManager.toJSON());
+
+    restored._sources.forEach((source) => this.addSource(source));
+    restored._tracks.forEach((track) => {
+      this._tracks.set(track.id, track);
+      this._subscribeToRouteLatency(track.route);
+      this.trackAdded.emit(track);
+    });
+    restored._ranges.forEach((range) => {
+      this._ranges.set(range.id, range);
+      this.rangeAdded.emit(range);
+    });
+    restored._sendBuses.forEach((sendBus) => {
+      this._sendBuses.set(sendBus.id, sendBus);
+      this.sendBusAdded.emit(sendBus);
+    });
+    restored._markers.forEach((marker) => this.registerMarker(marker, true));
+    restored._regionGroups.forEach((group) => {
+      this._regionGroups.set(group.id, group);
+      group
+        .getRegionIds()
+        .forEach((regionId) =>
+          this._regionToGroupIndex.set(regionId, group.id),
+        );
+      this.regionGroupAdded.emit(group);
+    });
+    restored._trackGroups.forEach((group) => {
+      this._trackGroups.set(group.id, group);
+      this.trackGroupAdded.emit(group);
+    });
+    restored._cdMarkers.forEach((marker) => {
+      this._cdMarkers.set(marker.id, marker);
+      this.cdMarkerAdded.emit(marker);
+    });
+    restored._vcaTracks.forEach((vca) => {
+      this._vcaTracks.set(vca.id, vca);
+      this.vcaTrackAdded.emit(vca);
+    });
+    restored._sidechainConfigs.forEach((config) =>
+      this.registerSidechainConfig(config, true),
+    );
+    restored._takeLanes.forEach((lane) => this._takeLanes.set(lane.id, lane));
+
+    this.tempoChanged.emit(this.tempo);
+    this.timeSignatureChanged.emit(this.timeSignature);
+    this.transportPositionChanged.emit(this.transportFrame);
+    this.loopRangeChanged.emit(this.loopRangeId);
+    this.loopEnabledChanged.emit(this.loopEnabled);
+    this.punchRangeChanged.emit(this.punchRangeId);
+    this.punchEnabledChanged.emit(this.punchEnabled);
+    this.loopRecordingChanged.emit(this.loopRecordingEnabled);
+    this.preRollChanged.emit(this.preRollBars);
+    this.metronomeChanged.emit(this.metronomeEnabled);
+    this.metronomeVolumeChanged.emit(this.metronomeVolume);
+    this.computeLatencyCompensation();
+    this.restored.emit();
+  }
 }
 
 // ─── Snapshot Types ───────────────────────────────────────────────────────────
@@ -1531,8 +1840,14 @@ export interface RegionSnapshot {
   opaque?: boolean;
   fadeIn: number;
   fadeOut: number;
-  playbackRate: number;
-  timeDomain: number;
+  fadeInShape?: FadeShape;
+  fadeOutShape?: FadeShape;
+  playbackRate?: number;
+  stretch?: number;
+  pitchSemitones?: number;
+  syncPosition?: number | null;
+  transients?: number[];
+  timeDomain?: number;
   locked?: boolean;
 }
 
@@ -1541,6 +1856,7 @@ export interface TrackSnapshot {
   name: string;
   type: string;
   armed: boolean;
+  monitor?: boolean;
   mute: boolean;
   solo: boolean;
   color?: string;
@@ -1550,8 +1866,30 @@ export interface TrackSnapshot {
   trimGain?: number;
   comment?: string;
   recordMode?: RecordMode;
+  frozen?: boolean;
+  frozenSourceId?: string | null;
+  parentTrackId?: TrackId | null;
+  groupId?: string | null;
+  isCollapsed?: boolean;
+  alignStyle?: "existing_material" | "capture_time";
+  trackMode?: "normal" | "non_layered" | "tape";
+  bounceProgress?: number;
+  route?: RouteSnapshot;
   regions: RegionSnapshot[];
+  crossfades?: CrossfadeSnapshot[];
   midiRegions?: MidiRegionSnapshot[];
+}
+
+export interface CrossfadeSnapshot {
+  id: string;
+  inRegionId: string;
+  outRegionId: string;
+  position: number;
+  length: number;
+  type: CrossfadeType;
+  fadeInCurve: FadeCurve;
+  fadeOutCurve: FadeCurve;
+  active: boolean;
 }
 
 export interface RangeSnapshot {
@@ -1559,6 +1897,37 @@ export interface RangeSnapshot {
   name: string;
   start: number;
   end: number;
+  color?: string;
+}
+
+export interface SourceSnapshot {
+  id: SourceId;
+  name: string;
+  url: string;
+  duration: number;
+  sampleRate?: number;
+  channelCount?: number;
+  videoMetadata?: VideoMetadata;
+  flags?: number;
+  takeId?: string;
+  ancestorName?: string;
+  naturalPosition?: number;
+  transients?: number[];
+  cueMarkers?: Array<[number, string]>;
+  xrunPositions?: number[];
+  capturedFor?: string;
+  analysisData?:
+    | (Omit<SourceAnalysisData, "transients"> & { transients?: number[] })
+    | null;
+}
+
+export interface GridSettingsSnapshot {
+  gridType: GridType;
+  snapMode: SnapMode;
+  snapToGrid: boolean;
+  bpm: number;
+  timeSignatureNumerator: number;
+  timeSignatureDenominator: number;
 }
 
 export interface SendBusSnapshot {
@@ -1584,7 +1953,15 @@ export interface SessionSnapshot {
   sampleRate: number;
   tempo: number;
   timeSignature: [number, number];
+  timecodeFps?: number;
   transportFrame: number;
+  recordingStartFrame?: number;
+  metronomeEnabled?: boolean;
+  metronomeVolume?: number;
+  groupSelectEnabled?: boolean;
+  sources?: SourceSnapshot[];
+  masterBus?: RouteSnapshot;
+  gridSettings?: GridSettingsSnapshot;
   tracks: TrackSnapshot[];
   ranges: RangeSnapshot[];
   sendBuses: SendBusSnapshot[];
@@ -1595,9 +1972,11 @@ export interface SessionSnapshot {
   punchEnabled?: boolean;
   preRollBars?: number;
   loopRecordingEnabled?: boolean;
+  loopRecordingTakeCount?: number;
   rippleEdit?: boolean;
   regionGroups?: RegionGroupSnapshot[];
   tempoMapEvents?: TempoEventSnapshot[];
+  meterMapEvents?: MeterEventSnapshot[];
   mixerScenes?: MixerSceneSnapshot[];
   trackGroups2?: TrackGroupSnapshot[];
   cdMarkers?: CDMarkerSnapshot[];
@@ -1611,6 +1990,12 @@ export interface TempoEventSnapshot {
   bpm: number;
   timeSigNum?: number;
   timeSigDen?: number;
+}
+
+export interface MeterEventSnapshot {
+  frame: number;
+  beatsPerBar: number;
+  beatValue: number;
 }
 
 export interface RegionGroupSnapshot {

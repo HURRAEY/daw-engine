@@ -291,7 +291,7 @@ export class Track {
   // ─── Alignment Style ────────────────────────────────────────────────────
 
   /** Get the current alignment style for recording. */
-  public getAlignStyle(): string {
+  public getAlignStyle(): "existing_material" | "capture_time" {
     return this._alignStyle;
   }
 
@@ -306,7 +306,7 @@ export class Track {
   // ─── Track Mode ─────────────────────────────────────────────────────────
 
   /** Get the current track mode. */
-  public getTrackMode(): string {
+  public getTrackMode(): TrackMode {
     return this._trackMode;
   }
 
