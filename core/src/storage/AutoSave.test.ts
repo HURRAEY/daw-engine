@@ -15,9 +15,15 @@ function createDeferred(): {
   return { promise, resolve };
 }
 
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe("AutoSave write ordering", () => {
   const autoSave = AutoSave.getInstance();
-  const saveSession = vi.fn<(session: Session) => Promise<void>>();
+  const saveSession = vi.fn<SessionStorage["saveSession"]>();
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -63,15 +69,15 @@ describe("AutoSave write ordering", () => {
     autoSave.markDirty();
 
     const firstSaving = autoSave.saveNow();
-    await Promise.resolve();
+    await flushMicrotasks();
     autoSave.markDirty();
     const secondSaving = autoSave.saveNow();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(saveSession).toHaveBeenCalledTimes(1);
     firstSave.resolve();
     await firstSaving;
-    await Promise.resolve();
+    await flushMicrotasks();
     expect(saveSession).toHaveBeenCalledTimes(2);
     expect(autoSave.dirty).toBe(true);
 
@@ -103,7 +109,7 @@ describe("AutoSave write ordering", () => {
     autoSave.start(session);
     autoSave.markDirty();
     const firstSaving = autoSave.saveNow();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     autoSave.start(session);
     autoSave.markDirty();
@@ -121,17 +127,73 @@ describe("AutoSave write ordering", () => {
     autoSave.start(firstSession);
     autoSave.markDirty();
     const firstSaving = autoSave.saveNow();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     autoSave.start(secondSession);
     autoSave.markDirty();
     const secondSaving = autoSave.saveNow();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(saveSession).toHaveBeenCalledTimes(2);
     await secondSaving;
     expect(autoSave.dirty).toBe(false);
 
+    firstSave.resolve();
+    await firstSaving;
+  });
+
+  it("keeps writes ordered when an in-place restore changes the session id", async () => {
+    const session = new Session("before", "before");
+    const firstSave = createDeferred();
+    const secondSave = createDeferred();
+    saveSession
+      .mockReturnValueOnce(firstSave.promise)
+      .mockReturnValueOnce(secondSave.promise);
+    autoSave.start(session);
+    autoSave.markDirty();
+    const firstSaving = autoSave.saveNow();
+    await flushMicrotasks();
+
+    session.restoreFromJSON(new Session("after", "after").toJSON());
+    autoSave.markDirty();
+    const secondSaving = autoSave.saveNow();
+    await flushMicrotasks();
+
+    expect(saveSession).toHaveBeenCalledTimes(1);
+    firstSave.resolve();
+    await firstSaving;
+    await flushMicrotasks();
+    expect(saveSession).toHaveBeenCalledTimes(2);
+
+    secondSave.resolve();
+    await secondSaving;
+  });
+
+  it("persists immutable snapshot ids across cross-object replacements", async () => {
+    const firstSession = new Session("first", "first");
+    const firstSave = createDeferred();
+    const secondSave = createDeferred();
+    saveSession
+      .mockReturnValueOnce(firstSave.promise)
+      .mockReturnValueOnce(secondSave.promise);
+    autoSave.start(firstSession);
+    autoSave.markDirty();
+    const firstSaving = autoSave.saveNow();
+    await flushMicrotasks();
+
+    firstSession.restoreFromJSON(new Session("renamed", "shared").toJSON());
+    const replacementSession = new Session("replacement", "shared");
+    autoSave.start(replacementSession);
+    autoSave.markDirty();
+    const secondSaving = autoSave.saveNow();
+    await flushMicrotasks();
+
+    expect(saveSession).toHaveBeenCalledTimes(2);
+    expect(saveSession.mock.calls[0][0].toJSON().id).toBe("first");
+    expect(saveSession.mock.calls[1][0].toJSON().id).toBe("shared");
+
+    secondSave.resolve();
+    await secondSaving;
     firstSave.resolve();
     await firstSaving;
   });
