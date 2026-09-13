@@ -8,6 +8,28 @@ npm install @daw-engine/core
 
 ## Features
 
+### Domain-only entry point
+
+Import `@daw-engine/core/domain` when a host only needs `Session`, `Source`,
+`Track`, and `Region`. This entry does not import the browser audio provider or
+IndexedDB storage. It does not implement recording, playback, or persistence;
+the host must supply those capabilities. A runtime implementation of
+`crypto.randomUUID()` is required when constructing domain objects.
+
+```typescript
+import { Session, TrackType } from "@daw-engine/core/domain";
+
+const session = new Session("Recording", "session", 48000);
+const vocal = session.addTrack("Voice", TrackType.AUDIO, "voice");
+console.log(vocal.name, session.sampleRate);
+```
+
+Build this entry and its transitive domain dependencies with `pnpm build:domain`
+from `core/`. The regular core build also includes this entry. Native application
+compatibility still requires validating the chosen audio and storage adapters.
+
+### Full engine
+
 - **Headless** — No browser, no React, no framework required. Runs in Node.js, Electron, or any JS runtime.
 - **Command Pattern** — All mutations go through `CommandExecutor` with built-in Undo/Redo.
 - **Dependency Injection** — Bring your own audio backend via the `AudioProvider` interface.

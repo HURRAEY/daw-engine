@@ -10,6 +10,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./domain": {
+      "types": "./dist/domain-entry.d.ts",
+      "import": "./dist/domain-entry.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -29,6 +33,7 @@
     "node": ">=18"
   },
   "scripts": {
+    "build:domain": "tsc -p tsconfig.domain.json",
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "lint": "pnpm --dir .. run lint:core",
