@@ -1,6 +1,6 @@
 import { Track, TrackType } from "./Track";
 import { MonitorMode } from "./MonitorMode";
-import { Route } from "./Route";
+import { Route, RouteSnapshot } from "./Route";
 import { Source } from "./Source";
 import { Range } from "./Range";
 import { Region } from "./Region";
@@ -1204,6 +1204,7 @@ export class Session {
         monitorMode: t.monitorMode,
         trimGain: t.trimGain,
         comment: t.comment,
+        route: t.route.toJSON(),
         regions: t.playlist.getRegions().map((r) => ({
           id: r.id,
           sourceId: r.sourceId,
@@ -1310,6 +1311,11 @@ export class Session {
       if (trackData.trimGain !== undefined)
         track.setTrimGain(trackData.trimGain);
       if (trackData.comment !== undefined) track.comment = trackData.comment;
+      if (trackData.route) {
+        session._unsubscribeFromRouteLatency(track.route.id);
+        track.route.restoreFromJSON(trackData.route, session.sampleRate);
+        session._subscribeToRouteLatency(track.route);
+      }
 
       for (const regionData of trackData.regions) {
         const region = new Region(
@@ -1497,6 +1503,7 @@ export interface TrackSnapshot {
   monitorMode?: string;
   trimGain?: number;
   comment?: string;
+  route?: RouteSnapshot;
   regions: RegionSnapshot[];
   midiRegions?: MidiRegionSnapshot[];
 }
