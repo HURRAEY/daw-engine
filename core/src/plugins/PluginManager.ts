@@ -15,6 +15,13 @@ export interface PluginDescriptor {
   type: PluginType;
 }
 
+export interface PluginSnapshotIdentity {
+  descriptorId: string;
+  instanceId: PluginId;
+  name: string;
+  type: PluginType;
+}
+
 export class PluginManager {
   private static instance: PluginManager;
   private availablePlugins: PluginDescriptor[] = [
@@ -69,12 +76,15 @@ export class PluginManager {
     return this.availablePlugins;
   }
 
-  public createPlugin(descriptorId: string): Plugin | null {
+  public createPlugin(
+    descriptorId: string,
+    instanceId?: PluginId,
+  ): Plugin | null {
     const desc = this.availablePlugins.find((p) => p.id === descriptorId);
     if (!desc) return null;
 
     const plugin = new GenericPlugin(
-      crypto.randomUUID() as PluginId,
+      instanceId ?? (crypto.randomUUID() as PluginId),
       desc.name,
       desc.type,
     );
@@ -670,7 +680,7 @@ export class PluginManager {
 
       case "internal-sync-delay": {
         const syncDelay = new SyncDelayPlugin(
-          crypto.randomUUID() as PluginId,
+          instanceId ?? (crypto.randomUUID() as PluginId),
           desc.name,
           desc.type,
         );
@@ -681,7 +691,7 @@ export class PluginManager {
 
       case "internal-convolver": {
         const convolver = new ConvolutionReverbPlugin(
-          crypto.randomUUID() as PluginId,
+          instanceId ?? (crypto.randomUUID() as PluginId),
           desc.name,
           desc.type,
         );
@@ -693,5 +703,24 @@ export class PluginManager {
     }
 
     return plugin;
+  }
+
+  public createPluginFromSnapshot(snapshot: PluginSnapshotIdentity): Plugin {
+    const registeredPlugin = this.createPlugin(
+      snapshot.descriptorId,
+      snapshot.instanceId,
+    );
+    if (registeredPlugin?.type === snapshot.type) {
+      return registeredPlugin;
+    }
+
+    const fallbackPlugin = new GenericPlugin(
+      snapshot.instanceId,
+      snapshot.name,
+      snapshot.type,
+    );
+    (fallbackPlugin as GenericPlugin & { descriptorId: string }).descriptorId =
+      snapshot.descriptorId;
+    return fallbackPlugin;
   }
 }
