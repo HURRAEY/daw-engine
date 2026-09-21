@@ -1,6 +1,6 @@
 {
   "name": "@anaidev/daw-engine-core",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Headless DAW engine — domain models, command system, audio engine, automation, plugins, MIDI",
   "license": "MIT",
   "publishConfig": {
