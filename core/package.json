@@ -2,7 +2,7 @@
   "name": "@daw-engine/core",
   "version": "1.0.0",
   "description": "Headless DAW engine — domain models, command system, audio engine, automation, plugins, MIDI",
-  "license": "MIT",
+  "license": "GPL-2.0-or-later",
   "publishConfig": {
     "access": "public"
   },
@@ -26,7 +26,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "sideEffects": false,
   "engines": {
