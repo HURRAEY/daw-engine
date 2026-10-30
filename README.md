@@ -216,4 +216,40 @@ pnpm build
 
 ## License
 
-MIT
+This license applies to both `@daw-engine/core` and `@daw-engine/ui-utils`.
+
+Copyright (c) 2025 HURRAEY.
+
+Licensed under the GNU General Public License, version 2 or (at your option)
+any later version (`GPL-2.0-or-later`). See [LICENSE](./LICENSE) for the full
+terms and [NOTICE](./NOTICE) for the project copyright and licensing notice.
+
+- Use, study, modification, and commercial use are permitted.
+- Redistributed copies must preserve the copyright, license, and warranty
+  notices and include the GPL text. Modified files must state that they were
+  changed and record the date of the change.
+- When distributing a covered derivative or combined work, license that work
+  under the GPL. Distribution of covered binaries or bundles must satisfy
+  GPLv2 section 3, including providing the complete corresponding source code
+  or a qualifying source offer. This includes modifications and the scripts
+  needed to control compilation and installation, not just the engine's source.
+- Purely private use and modification do not require publishing source code.
+  Running a server without distributing software does not by itself trigger
+  GPLv2's source distribution obligations. Delivering JavaScript bundles to
+  users' browsers does distribute software.
+- Audio, MIDI, and project files merely created or processed with the engine
+  are not covered by the GPL unless their contents themselves include covered
+  software.
+
+GPL requires preserving legal notices. It does not impose a universal
+"Powered by" banner or project-link requirement. Interactive notice obligations
+apply where GPLv2 section 2(c) requires them. An About or Third-Party Notices
+section can identify the project as:
+
+```text
+DAW Engine by HURRAEY - https://github.com/HURRAEY/daw-engine
+```
+
+Earlier copies obtained under MIT retain their MIT permissions. This change
+does not retroactively revoke those permissions. Separately licensed third-party
+dependencies and bundled third-party code retain their own licenses.
