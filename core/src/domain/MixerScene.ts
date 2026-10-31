@@ -71,6 +71,7 @@ export class MixerSceneManager {
   public readonly sceneAdded = new Signal<MixerScene>();
   public readonly sceneRemoved = new Signal<string>();
   public readonly sceneRecalled = new Signal<string>();
+  public readonly sceneRenamed = new Signal<string>();
 
   /**
    * Capture the current mixer state from the session and save as a scene.
@@ -148,6 +149,19 @@ export class MixerSceneManager {
     if (!this._scenes.has(sceneId)) return false;
     this._scenes.delete(sceneId);
     this.sceneRemoved.emit(sceneId);
+    return true;
+  }
+
+  /**
+   * Rename a scene by ID.
+   */
+  public renameScene(sceneId: string, name: string): boolean {
+    const scene = this._scenes.get(sceneId);
+    if (!scene) return false;
+    if (scene.name === name) return true;
+
+    scene.name = name;
+    this.sceneRenamed.emit(sceneId);
     return true;
   }
 

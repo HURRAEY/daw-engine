@@ -25,6 +25,9 @@ export class SetRegionPlaybackRateCommand implements UndoableCommand {
     regionId: RegionId,
     playbackRate: number,
   ) {
+    if (!Number.isFinite(playbackRate) || playbackRate <= 0) {
+      throw new RangeError("Playback rate must be a finite positive number");
+    }
     this.id = crypto.randomUUID();
     this.session = session;
     this.audioEngine = audioEngine;

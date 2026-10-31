@@ -16,14 +16,20 @@ npm install ../daw-engine/core lamejs
 
 소스 빌드 순서는 [루트 README](https://github.com/HURRAEY/daw-engine#installation)를 참고하세요. 예제는 TypeScript와 ESM을 지원하는 번들러 환경을 기준으로 합니다.
 
-`lamejs`는 현재 공개 진입점에서 정적으로 import되므로 함께 설치합니다. `soundtouchjs`도 선택적 peer dependency로 선언돼 있지만, 이 패키지가 해당 라이브러리를 직접 호출하는 경로는 없습니다.
+소스에서 빌드한 패키지의 전체 공개 진입점은 `lamejs`를 정적으로 import하므로 함께 설치합니다. `soundtouchjs`도 선택적 peer dependency로 선언돼 있지만, 이 패키지가 해당 라이브러리를 직접 호출하는 경로는 없습니다. 빌드된 루트 패키지를 Git 커밋으로 설치하는 방법도 [루트 README](https://github.com/HURRAEY/daw-engine#installation)에 안내돼 있습니다.
+
+## Domain-only entry point
+
+소스에서 빌드한 이 패키지는 `@daw-engine/core/domain`으로 `Session`, `Source`, `Track`, `Region`을 제공합니다. 브라우저 오디오나 IndexedDB 모듈을 가져오지 않으며, 도메인 객체를 생성하려면 `crypto.randomUUID()`를 지원하는 런타임이 필요합니다.
+
+이 진입점은 재생·녹음·저장을 구현하지 않습니다. `npm run build:domain`으로 해당 진입점과 의존 모듈을 별도로 빌드할 수 있으며, 일반 `npm run build`에도 포함됩니다. Git 설치용 루트 패키지는 현재 `domain` 하위 경로를 노출하지 않으므로, 이 진입점을 사용하려면 개별 `core` 패키지를 빌드해 설치합니다.
 
 ## Quick start
 
 오디오 장치 없이 세션과 트랙을 만들 수 있습니다.
 
 ```typescript
-import { Session, TrackType } from "@daw-engine/core";
+import { Session, TrackType } from "@daw-engine/core/domain";
 
 const session = new Session("My Song", undefined, 44100);
 const track = session.addTrack("Vocals", TrackType.AUDIO);
@@ -113,6 +119,8 @@ export async function initializeDAW(backend: AudioProvider) {
 - `engine.startRecording()`, `stopRecording()`: 녹음 제어
 
 Web Audio 백엔드에서는 사용자 입력에 따른 AudioContext 활성화도 백엔드와 애플리케이션에서 처리합니다.
+
+백엔드는 `applyRoutingSnapshot()`을 구현해 트랙·Processor 연결의 동결된 실행 구조를 전달받습니다. 비동기 페이드아웃 후 정지가 필요하면 선택적 `stopWithDeclick()`도 구현할 수 있습니다. `engine.setBackend(backend)`는 기존 세션을 새 백엔드에 구성하는 비동기 작업이므로 `await`로 완료를 기다립니다.
 
 ## Commands and undo / redo
 
@@ -210,7 +218,9 @@ Input → Trim → Pre-fader plugins → Fader → Polarity
 
 `Session.toJSON()`은 편집 상태를 직렬화하고 `Session.fromJSON()`은 해당 Snapshot에서 객체를 구성합니다. `SessionStorage`는 IndexedDB에 세션과 이름 있는 스냅샷을 저장합니다.
 
-현재 Snapshot에는 Source 목록과 트랙의 Processor·플러그인 체인 상태가 포함되지 않습니다. 전체 프로젝트를 보관하려면 원본 오디오와 추가 상태를 별도로 관리해야 합니다. `LOAD_SESSION` 명령은 기존 Session을 재사용하며, `Session.fromJSON()`과 복원 범위가 다릅니다.
+Snapshot에는 Source 메타데이터와 URL, 트랙·리전, 트랙과 마스터 Route의 입출력·Processor 체인·플러그인 파라미터·오토메이션 상태 등이 포함됩니다. `LOAD_SESSION` 명령도 같은 직렬화 구조를 사용해 기존 Session을 복원하고 백엔드의 소스·트랙·리전·라우팅을 다시 구성합니다.
+
+원본 오디오 파일의 바이트는 Snapshot에 포함되지 않습니다. 전체 프로젝트를 장기 보관하려면 파일을 함께 저장하고, 복원 시 사용할 수 있는 URL이나 자산 참조로 연결해야 합니다.
 
 `SessionArchive`는 호출자가 전달한 세션 JSON과 오디오 Blob을 묶습니다. 아카이브를 생성하는 것과 백엔드에 소스를 다시 연결하는 것은 별개의 작업입니다.
 
@@ -251,4 +261,38 @@ npm test
 
 ## License
 
-[MIT](./LICENSE)
+Copyright (c) 2025 HURRAEY.
+
+Licensed under the GNU General Public License, version 2 or (at your option)
+any later version (`GPL-2.0-or-later`). See [LICENSE](./LICENSE) for the full
+terms and [NOTICE](./NOTICE) for the project copyright and licensing notice.
+
+- Use, study, modification, and commercial use are permitted.
+- Redistributed copies must preserve the copyright, license, and warranty
+  notices and include the GPL text. Modified files must state that they were
+  changed and record the date of the change.
+- When distributing a covered derivative or combined work, license that work
+  under the GPL. Distribution of covered binaries or bundles must satisfy
+  GPLv2 section 3, including providing the complete corresponding source code
+  or a qualifying source offer. This includes modifications and the scripts
+  needed to control compilation and installation, not just the engine's source.
+- Purely private use and modification do not require publishing source code.
+  Running a server without distributing software does not by itself trigger
+  GPLv2's source distribution obligations. Delivering JavaScript bundles to
+  users' browsers does distribute software.
+- Audio, MIDI, and project files merely created or processed with the engine
+  are not covered by the GPL unless their contents themselves include covered
+  software.
+
+GPL requires preserving legal notices. It does not impose a universal
+"Powered by" banner or project-link requirement. Interactive notice obligations
+apply where GPLv2 section 2(c) requires them. An About or Third-Party Notices
+section can identify the project as:
+
+```text
+DAW Engine by HURRAEY - https://github.com/HURRAEY/daw-engine
+```
+
+Earlier copies obtained under MIT retain their MIT permissions. This change
+does not retroactively revoke those permissions. Separately licensed third-party
+dependencies and bundled third-party code retain their own licenses.

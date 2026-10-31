@@ -2,7 +2,7 @@
   "name": "@daw-engine/core",
   "version": "1.0.0",
   "description": "Headless DAW engine — domain models, command system, audio engine, automation, plugins, MIDI",
-  "license": "MIT",
+  "license": "GPL-2.0-or-later",
   "publishConfig": {
     "access": "public"
   },
@@ -10,6 +10,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./domain": {
+      "types": "./dist/domain-entry.d.ts",
+      "import": "./dist/domain-entry.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -22,15 +26,18 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "sideEffects": false,
   "engines": {
     "node": ">=18"
   },
   "scripts": {
+    "build:domain": "tsc -p tsconfig.domain.json",
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
+    "lint": "pnpm --dir .. run lint:core",
     "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

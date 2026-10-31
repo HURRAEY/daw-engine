@@ -18,7 +18,7 @@ import type { VideoMetadata } from "../../domain/VideoMetadata";
 import { AddSourceCommand } from "../impl/AddSourceCommand";
 import { AddRegionCommand } from "../impl/AddRegionCommand";
 import { RemoveRegionCommand } from "../impl/RemoveRegionCommand";
-import { MoveRegionCommand } from "../impl/MoveRegionCommand";
+import { moveRegionAndCreateTransaction } from "../history/moveRegionAndCreateTransaction";
 import { ResizeRegionCommand } from "../impl/ResizeRegionCommand";
 import { CopyRegionCommand } from "../impl/CopyRegionCommand";
 import { PasteRegionCommand } from "../impl/PasteRegionCommand";
@@ -44,6 +44,8 @@ import { BatchMoveRegionsCommand } from "../impl/BatchMoveRegionsCommand";
 import { BatchTrimRegionsCommand } from "../impl/BatchTrimRegionsCommand";
 import { BatchRemoveRegionsCommand } from "../impl/BatchRemoveRegionsCommand";
 import { BatchSetRegionFadesCommand } from "../impl/BatchSetRegionFadesCommand";
+import { SetRegionLayerCommand } from "../impl/SetRegionLayerCommand";
+import { SetRegionOpaqueCommand } from "../impl/SetRegionOpaqueCommand";
 
 /**
  * Region Command Handler
@@ -70,6 +72,8 @@ export class RegionHandler implements CommandHandler {
     CommandType.TRIM_REGION_TO_RANGE,
     CommandType.TRIM_TO_ADJACENT_REGION,
     CommandType.SET_REGION_FADES,
+    CommandType.SET_REGION_LAYER,
+    CommandType.SET_REGION_OPAQUE,
     CommandType.MERGE_REGIONS,
     CommandType.SELECT_REGIONS,
     CommandType.LOCK_REGION,
@@ -206,14 +210,14 @@ export class RegionHandler implements CommandHandler {
           }
         }
 
-        const cmd = new MoveRegionCommand(
+        const transaction = moveRegionAndCreateTransaction({
           session,
-          requireString(payload, "trackId"),
-          primaryRegionId,
+          trackId: requireString(payload, "trackId"),
+          regionId: primaryRegionId,
           newStart,
-          optionalString(payload, "targetTrackId"),
-        );
-        await history.execute(cmd);
+          targetTrackId: optionalString(payload, "targetTrackId"),
+        });
+        await history.record(transaction, transaction.name);
         return { success: true, message: `Region moved to ${newStart}` };
       }
 
@@ -343,6 +347,28 @@ export class RegionHandler implements CommandHandler {
         );
         await history.execute(cmd);
         return { success: true, message: `Region fades updated` };
+      }
+
+      case CommandType.SET_REGION_LAYER: {
+        const command = new SetRegionLayerCommand(
+          audioEngine.session,
+          requireString(payload, "trackId"),
+          requireString(payload, "regionId"),
+          requireNumber(payload, "layer"),
+        );
+        await history.execute(command);
+        return { success: true, message: "Region layer updated" };
+      }
+
+      case CommandType.SET_REGION_OPAQUE: {
+        const command = new SetRegionOpaqueCommand(
+          audioEngine.session,
+          requireString(payload, "trackId"),
+          requireString(payload, "regionId"),
+          requireBoolean(payload, "opaque"),
+        );
+        await history.execute(command);
+        return { success: true, message: "Region opacity updated" };
       }
 
       case CommandType.MERGE_REGIONS: {

@@ -1,3 +1,7 @@
+// 선언 번들 생성기가 lamejs ambient module을 찾도록 entry에서 타입 선언을 직접 참조합니다.
+// eslint-disable-next-line @typescript-eslint/triple-slash-reference
+/// <reference path="./lamejs.d.ts" />
+
 // ─── Domain ─────────────────────────────────────────────────────────────────
 export { Session } from "./domain/Session";
 export { Track, TrackType } from "./domain/Track";
@@ -82,6 +86,18 @@ export { LatencyCompensator } from "./audio/engine/LatencyCompensator";
 export { SidechainRouter } from "./audio/engine/SidechainRouter";
 export { RoutingGraph } from "./audio/engine/RoutingGraph";
 export type { GraphNode, FeedbackLoop } from "./audio/engine/RoutingGraph";
+export {
+  createRoutingSnapshot,
+  getProcessorRuntimeType,
+  ROUTING_SNAPSHOT_SCHEMA_VERSION,
+} from "./audio/engine/RoutingSnapshot";
+export type {
+  ProcessorRoutingSnapshot,
+  RoutingEdgeSnapshot,
+  RoutingNodeSnapshot,
+  RoutingNodeType,
+  RoutingSnapshot,
+} from "./audio/engine/RoutingSnapshot";
 export { PunchRecordManager } from "./audio/engine/PunchRecordManager";
 export type { PunchState } from "./audio/engine/PunchRecordManager";
 export { MultiTrackRecorder } from "./audio/engine/MultiTrackRecorder";
@@ -98,6 +114,15 @@ export { ExportPresetManager } from "./audio/export/ExportPresetManager";
 // ─── Commands ───────────────────────────────────────────────────────────────
 export { CommandExecutor } from "./commands/CommandExecutor";
 export { CommandHistory } from "./commands/CommandHistory";
+export { UndoTransaction } from "./commands/UndoTransaction";
+export type {
+  Command,
+  ReversibleChange,
+  UndoableCommand,
+} from "./commands/Command";
+export type { HistoryEntry } from "./commands/CommandHistory";
+export { moveRegionAndCreateTransaction } from "./commands/history/moveRegionAndCreateTransaction";
+export type { RegionMoveRequest } from "./commands/history/moveRegionAndCreateTransaction";
 export { CommandType } from "./commands/types";
 export type { AudioCommand } from "./commands/types";
 export type {

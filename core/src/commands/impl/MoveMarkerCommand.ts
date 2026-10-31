@@ -16,6 +16,7 @@ export class MoveMarkerCommand implements UndoableCommand {
     const session = AudioEngine.getInstance().session;
     const marker = session.getMarker(this.markerId);
     if (!marker) throw new Error(`Marker not found: ${this.markerId}`);
+    if (marker.locked) throw new Error(`Marker is locked: ${this.markerId}`);
 
     this.oldPosition = marker.position;
     marker.position = this.newPosition;

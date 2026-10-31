@@ -3,6 +3,8 @@ import { FrameCount } from "./types";
 
 export type MarkerId = string;
 
+const MIN_MARKER_POSITION = 0;
+
 /**
  * Song Position Marker
  *
@@ -28,7 +30,7 @@ export class Marker {
   ) {
     this.id = id;
     this._name = name;
-    this._position = position;
+    this._position = Math.max(MIN_MARKER_POSITION, position);
     this._color = color;
     this._locked = locked;
   }
@@ -49,7 +51,7 @@ export class Marker {
   public set position(value: FrameCount) {
     if (this._locked) return;
     if (this._position !== value) {
-      this._position = Math.max(0, value);
+      this._position = Math.max(MIN_MARKER_POSITION, value);
       this.changed.emit();
     }
   }

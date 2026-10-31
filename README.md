@@ -4,6 +4,8 @@
 
 daw-engine은 트랙, 타임라인 리전, 믹서 경로, 편집 명령을 애플리케이션의 화면과 분리해 다룹니다. 음악 프로젝트의 상태는 엔진이 관리하고, 실제 오디오 재생과 녹음은 애플리케이션이 제공하는 백엔드에 연결합니다. 기존 오디오 기술을 이용해 제품을 만들 때, 개발자가 추가로 구현해야 하는 편집기 공통 구조를 제공합니다.
 
+이 저장소는 엔진의 기준 소스입니다. AnAI Media Editor와의 연결은 제품별 어댑터를 통해 구성합니다.
+
 [도입 이유](#why-daw-engine) · [기존 도구와 비교](#comparison) · [핵심 기능](#features) · [시작하기](#installation) · [Core](./core/README.md) · [UI utilities](./ui-utils/README.md) · [구조](#architecture)
 
 ## Why daw-engine?
@@ -56,9 +58,10 @@ daw-engine의 도입 근거는 **제품에 필요한 편집 모델·명령 이�
 - **실행 취소가 가능한 편집 명령**: 주요 편집 동작에 실행·취소·재실행 구조를 제공합니다. 이력 보관 깊이를 설정할 수 있으며, 화면 버튼과 단축키 등 여러 입력에서 같은 명령을 호출할 수 있는 기반입니다.
 - **1,920 PPQ 음악적 시간 모델**: 4분음표 한 박을 1,920개의 정수 틱으로 표현합니다. 절대 시간과 박자 기반 시간을 구분하고, 템포에 따른 박자·샘플 프레임 변환을 제공합니다.
 - **6종의 트랙 모델**: Audio, MIDI, AUX, BUS, FOLDER, VCA 타입으로 트랙의 역할을 구분합니다. 트랙의 타임라인 배치는 Playlist로, 입출력과 Processor 체인은 Route로 표현합니다.
-- **믹싱·라우팅 모델**: 볼륨·팬·뮤트·솔로, 플러그인 파라미터, 센드 레벨과 프리·포스트 페이더 설정을 관리합니다. 사용자가 편집할 트랙·AUX·BUS·마스터의 연결 관계를 프로젝트 정보로 표현합니다.
+- **믹싱·그래프 기반 라우팅 모델**: 볼륨·팬·뮤트·솔로, 플러그인 파라미터, 센드 레벨과 프리·포스트 페이더 설정을 관리합니다. 트랙·AUX·BUS·마스터의 연결 그래프에서 처리 순서와 피드백 경로를 계산해 동결된 실행 Snapshot으로 백엔드에 전달합니다.
 - **5가지 모드를 갖는 오토메이션 모델**: Read, Write, Touch, Latch, Off 모드 값과 함께 커브 보간, 조작 상태, 기록 구간을 관리하는 API를 제공합니다. 입력 이벤트와 모드별 실행을 연결할 때는 [현재 구현 범위](#automation)를 확인하세요.
 - **편집 상태와 오디오 실행의 연결**: 도메인의 변경 알림을 받아 클립 배치와 처리 설정을 백엔드에 전달합니다. `AudioProvider`를 통해 재생, 녹음, 탐색, 루프와 미터링을 연결합니다.
+- **편집 상태의 저장과 복원**: 소스 메타데이터, 트랙과 마스터 Route, Processor·플러그인 상태를 Snapshot으로 직렬화합니다. 세션 복원 시 백엔드의 트랙·리전·라우팅을 다시 구성합니다.
 - **익스포트 흐름**: 지정 구간의 마스터 믹스나 선택 트랙을 백엔드에서 렌더링한 뒤 정규화와 파일 인코딩으로 연결합니다.
 - **타임라인 화면 도구**: 좌표 변환, 파형, 눈금, 가상 스크롤, Canvas SceneGraph를 제공합니다.
 - **TypeScript API**: ESM과 타입 선언 파일을 함께 배포하도록 구성했습니다.
@@ -85,7 +88,28 @@ daw-engine의 도입 근거는 **제품에 필요한 편집 모델·명령 이�
 
 ## Installation
 
-현재는 저장소에서 두 패키지를 빌드해 로컬 경로로 설치합니다. 개발 도구는 Node.js 18 이상이 필요하며, 아래 예제는 TypeScript와 ESM을 지원하는 번들러 환경을 기준으로 합니다.
+npm 레지스트리에 게시되기 전에는 Git 커밋을 지정하거나 저장소에서 빌드한 로컬 패키지를 설치합니다. 루트 개발 도구는 Node.js 18.18 이상이 필요하며, 아래 예제는 TypeScript와 ESM을 지원하는 번들러 환경을 기준으로 합니다.
+
+### Git 커밋으로 Core 설치
+
+애플리케이션의 `package.json`에서 설치할 커밋 SHA를 지정합니다.
+
+```json
+{
+  "dependencies": {
+    "@daw-engine/core": "git+https://github.com/HURRAEY/daw-engine.git#<commit-sha>"
+  }
+}
+```
+
+저장소 루트 패키지는 `package-dist`의 빌드된 JavaScript와 타입 선언을 제공합니다. Git 설치 시 소비 앱에서 별도로 빌드할 필요는 없습니다. 브라우저의 `AudioProvider` 어댑터만 구현할 때는 좁은 진입점을 사용할 수 있습니다.
+
+```typescript
+import { AudioEngine } from "@daw-engine/core/browser-adapter";
+import type { AudioProvider } from "@daw-engine/core/browser-adapter";
+```
+
+`ui-utils`를 사용하거나 개별 패키지를 수정할 때는 아래 순서로 소스에서 빌드합니다.
 
 ### 소스에서 빌드
 
@@ -100,7 +124,7 @@ npm install --prefix ui-utils --no-save ./core
 npm run build --prefix ui-utils
 ```
 
-`ui-utils`는 먼저 빌드된 `core`의 타입 선언을 사용합니다. `lamejs`는 선택적 peer dependency로 선언돼 있지만 현재 `core`의 공개 진입점에서 정적으로 불러오므로 함께 설치합니다.
+`ui-utils`는 먼저 빌드된 `core`의 타입 선언을 사용합니다. 소스에서 빌드한 `core`의 전체 공개 진입점은 `lamejs`를 정적으로 불러오므로 함께 설치합니다. Git 설치용 루트 패키지와 소스 패키지는 배포 진입점이 다릅니다.
 
 ### 애플리케이션에 설치
 
@@ -133,6 +157,12 @@ console.log(track.name); // Vocals
 이 예제는 편집 상태를 만듭니다. 소리를 재생하려면 [오디오 백엔드](#audio-backend)를 연결합니다.
 
 ## Core concepts
+
+### Domain-only entry point
+
+소스에서 빌드한 `core` 패키지는 `@daw-engine/core/domain` 진입점을 제공합니다. `Session`, `Source`, `Track`, `Region`을 브라우저 오디오나 IndexedDB 모듈 없이 가져올 수 있습니다. 이 진입점 자체는 재생·녹음·저장을 구현하지 않으며, 도메인 객체 생성에는 `crypto.randomUUID()`를 제공하는 런타임이 필요합니다.
+
+`core` 폴더에서 `npm run build:domain`으로 해당 진입점과 의존 모듈을 빌드할 수 있습니다. 현재 Git 설치용 루트 패키지의 공개 진입점은 전체 API와 `browser-adapter`이며, `domain` 하위 경로는 개별 `core` 패키지를 빌드해 사용할 때 제공됩니다.
 
 ### Session, Track, Region
 
@@ -207,6 +237,8 @@ subscription.dispose();
 
 이 저장소에는 완성된 `AudioProvider` 구현이 포함돼 있지 않습니다. Tone.js나 브라우저 표준인 [Web Audio API](https://www.w3.org/TR/webaudio-1.0/)를 사용하는 백엔드를 별도로 연결할 수 있으며, 현재 인터페이스에는 `AudioBuffer`, `AnalyserNode`, `Blob` 같은 플랫폼 자료형이 포함됩니다.
 
+백엔드는 `applyRoutingSnapshot()`으로 트랙·Processor 연결의 동결된 실행 구조를 전달받습니다. 재생 정지 시 비동기 페이드아웃이 필요하면 선택적 `stopWithDeclick()`을 구현할 수 있습니다. 엔진은 해당 Promise가 완료된 뒤 정지 상태 전환을 마무리하며, 이 기능이 없는 백엔드는 즉시 `stop()`을 사용합니다.
+
 백엔드 초기화와 명령 사용 예제는 [Core README](./core/README.md#audio-backend)를 참고하세요.
 
 ## Architecture
@@ -231,7 +263,7 @@ flowchart LR
   App ==>|dispatch| Commands
   Commands ==>|edit| Session
   Session ==>|signals| Engine
-  Engine ==>|DTO / control| Backend
+  Engine ==>|DTO / RoutingSnapshot| Backend
   Commands -->|transport| Engine
   Backend -.->|frame / meter| Engine
   Engine -.->|position| Session
@@ -252,9 +284,11 @@ flowchart LR
 
 ### Routing graph utilities
 
-[RoutingGraph](./core/src/audio/engine/RoutingGraph.ts)는 위상 정렬을 통한 처리 순서 계산과 피드백 루프 감지 도구를 제공합니다. [ProcessingGraph](./core/src/audio/ProcessingGraph.ts)에도 DAG의 위상 정렬과 순환 검사 코드가 있습니다.
+[RoutingSnapshot](./core/src/audio/engine/RoutingSnapshot.ts)은 Session의 트랙·센드·사이드체인 연결을 그래프로 구성합니다. 내부에서 [RoutingGraph](./core/src/audio/engine/RoutingGraph.ts)를 사용해 위상 정렬에 따른 처리 순서와 피드백 경로를 계산합니다.
 
-현재 기본 `AudioEngine`이 이 그래프를 조립해 오디오를 실행하는 경로는 연결돼 있지 않습니다. 실제 라우팅 적용과 오디오 처리는 주입한 백엔드가 담당하므로, 그래프 유틸리티와 기본 재생 경로를 구분합니다.
+`AudioEngine`은 연결이나 Processor 순서가 변경되면 동결된 Snapshot을 `AudioProvider.applyRoutingSnapshot()`으로 전달합니다. 실제 라우팅 적용과 오디오 처리는 주입한 백엔드가 담당합니다.
+
+[ProcessingGraph](./core/src/audio/ProcessingGraph.ts)는 DAG의 위상 정렬과 순환 검사를 위한 별도의 구조 유틸리티입니다. 기본 엔진의 라우팅 전달 경로는 `RoutingSnapshot`과 `RoutingGraph`를 사용합니다.
 
 ## Runtime and storage
 
@@ -267,7 +301,9 @@ UI 프레임워크 없이 편집 모델을 사용할 수 있습니다. 다음 �
 - 파형 그리기와 재생 위치 추적: Canvas 2D와 `requestAnimationFrame`
 - 재생과 녹음: 애플리케이션이 제공하는 오디오 백엔드
 
-`Session.toJSON()`과 `Session.fromJSON()`은 직렬화 API입니다. 현재 Snapshot에는 Source 목록과 트랙의 Processor·플러그인 체인 상태가 포함되지 않습니다. 프로젝트를 보관할 때는 원본 오디오와 추가 상태도 함께 관리해야 합니다. `LOAD_SESSION` 명령과 `Session.fromJSON()`의 복원 범위도 서로 다릅니다.
+`Session.toJSON()`과 `Session.fromJSON()`은 직렬화 API입니다. Snapshot에는 Source 메타데이터와 URL, 트랙·리전, 트랙과 마스터 Route의 입출력·Processor 체인·플러그인 파라미터·오토메이션 상태 등이 포함됩니다. `LOAD_SESSION` 명령은 같은 직렬화 구조를 사용해 기존 Session을 복원하고 백엔드 실행 상태를 다시 구성합니다.
+
+Snapshot은 원본 오디오 파일의 바이트를 포함하지 않습니다. 장기 보관하려면 오디오 파일도 함께 저장하고, 다시 열 때 소스 URL이나 자산 참조를 사용할 수 있도록 연결해야 합니다.
 
 `SessionArchive`는 호출자가 전달한 세션 JSON과 오디오 Blob을 하나의 아카이브로 묶습니다. 기본 저장 명령에 자동으로 연결된 기능은 아닙니다.
 
@@ -287,6 +323,8 @@ UI 프레임워크 없이 편집 모델을 사용할 수 있습니다. 다음 �
 위의 설치 순서로 두 패키지를 빌드한 뒤, 저장소 루트에서 검사합니다.
 
 ```bash
+pnpm install --frozen-lockfile
+pnpm lint
 npm run typecheck --prefix core
 npm test --prefix core
 npm run typecheck --prefix ui-utils
@@ -302,4 +340,40 @@ API를 변경할 때는 관련 README 예제와 타입 검사를 함께 확인�
 
 ## License
 
-MIT. 각 패키지의 [Core LICENSE](./core/LICENSE)와 [UI utilities LICENSE](./ui-utils/LICENSE)를 참고하세요.
+This license applies to both `@daw-engine/core` and `@daw-engine/ui-utils`.
+
+Copyright (c) 2025 HURRAEY.
+
+Licensed under the GNU General Public License, version 2 or (at your option)
+any later version (`GPL-2.0-or-later`). See [LICENSE](./LICENSE) for the full
+terms and [NOTICE](./NOTICE) for the project copyright and licensing notice.
+
+- Use, study, modification, and commercial use are permitted.
+- Redistributed copies must preserve the copyright, license, and warranty
+  notices and include the GPL text. Modified files must state that they were
+  changed and record the date of the change.
+- When distributing a covered derivative or combined work, license that work
+  under the GPL. Distribution of covered binaries or bundles must satisfy
+  GPLv2 section 3, including providing the complete corresponding source code
+  or a qualifying source offer. This includes modifications and the scripts
+  needed to control compilation and installation, not just the engine's source.
+- Purely private use and modification do not require publishing source code.
+  Running a server without distributing software does not by itself trigger
+  GPLv2's source distribution obligations. Delivering JavaScript bundles to
+  users' browsers does distribute software.
+- Audio, MIDI, and project files merely created or processed with the engine
+  are not covered by the GPL unless their contents themselves include covered
+  software.
+
+GPL requires preserving legal notices. It does not impose a universal
+"Powered by" banner or project-link requirement. Interactive notice obligations
+apply where GPLv2 section 2(c) requires them. An About or Third-Party Notices
+section can identify the project as:
+
+```text
+DAW Engine by HURRAEY - https://github.com/HURRAEY/daw-engine
+```
+
+Earlier copies obtained under MIT retain their MIT permissions. This change
+does not retroactively revoke those permissions. Separately licensed third-party
+dependencies and bundled third-party code retain their own licenses.

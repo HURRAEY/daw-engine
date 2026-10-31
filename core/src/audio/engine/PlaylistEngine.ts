@@ -11,9 +11,8 @@ export const enum FadeCurve {
 export class PlaylistEngine {
   /**
    * Renders a block of audio for a given set of regions.
-   * Higher-layer regions take priority — when regions overlap,
-   * only the top-most layer's audio is heard at each sample position.
-   * Fades are applied per-region before the layer priority check.
+   * Higher Layer부터 처리합니다. 불투명 Region은 아래 Layer를 가리고,
+   * 투명 Region은 아래 Layer의 오디오와 합산됩니다.
    */
   public render(
     outputLeft: Float32Array,
@@ -23,6 +22,11 @@ export class PlaylistEngine {
     regions: RegionDTO[],
     getBuffer: (url: string) => AudioBuffer | null,
   ): void {
+    const outputsShareSampleRange = this.validateOutputSampleRanges(
+      outputLeft,
+      outputRight,
+    );
+
     // 1. Find active regions in this block
     const endFrame = startFrame + numFrames;
     const activeRegions = regions.filter(
@@ -40,17 +44,31 @@ export class PlaylistEngine {
     //    by a higher-layer region. Lower layers only write to uncovered positions.
     const covered = new Uint8Array(numFrames);
 
-    // 5. Render each region (highest layer first)
-    for (const region of activeRegions) {
-      this.renderRegion(
-        outputLeft,
-        outputRight,
-        startFrame,
-        numFrames,
-        region,
-        getBuffer,
-        covered,
-      );
+    // 5. Render each layer. Regions on the same layer share only the
+    //    coverage inherited from higher layers, so they can overlap.
+    for (let index = 0; index < activeRegions.length; ) {
+      const layer = activeRegions[index].layer;
+      const layerCoverage = new Uint8Array(numFrames);
+      while (
+        index < activeRegions.length &&
+        activeRegions[index].layer === layer
+      ) {
+        this.renderRegion(
+          outputLeft,
+          outputRight,
+          startFrame,
+          numFrames,
+          activeRegions[index],
+          getBuffer,
+          covered,
+          layerCoverage,
+          outputsShareSampleRange,
+        );
+        index++;
+      }
+      for (let frame = 0; frame < numFrames; frame++) {
+        covered[frame] ||= layerCoverage[frame];
+      }
     }
   }
 
@@ -62,6 +80,8 @@ export class PlaylistEngine {
     region: RegionDTO,
     getBuffer: (url: string) => AudioBuffer | null,
     covered: Uint8Array,
+    layerCoverage: Uint8Array,
+    outputsShareSampleRange: boolean,
   ) {
     const buffer = getBuffer(region.sourceId);
     if (!buffer) return;
@@ -73,19 +93,19 @@ export class PlaylistEngine {
     const renderStart = Math.max(startFrame, region.start);
     const renderEnd = Math.min(startFrame + numFrames, region.end);
 
-    const regionOffset = region.sourceStart + (renderStart - region.start);
+    const playbackRate = region.playbackRate;
+    if (!Number.isFinite(playbackRate) || playbackRate <= 0) return;
+    const regionOffset =
+      region.sourceStart + (renderStart - region.start) * playbackRate;
     const outOffset = renderStart - startFrame;
     const length = renderEnd - renderStart;
-
-    const playbackRate = region.playbackRate || 1.0;
 
     // When playbackRate != 1, the source consumes samples faster/slower.
     // Clamp the render length so we never read past the source buffer.
     const maxSourceFrames = bufferDataL.length - 1 - regionOffset;
     const maxOutputFrames =
-      playbackRate > 0 ? Math.ceil(maxSourceFrames / playbackRate) : length;
+      maxSourceFrames >= 0 ? Math.floor(maxSourceFrames / playbackRate) + 1 : 0;
     const clampedLength = Math.min(length, maxOutputFrames);
-
     for (let i = 0; i < clampedLength; i++) {
       const outIdx = outOffset + i;
 
@@ -130,12 +150,42 @@ export class PlaylistEngine {
 
       const gain = region.gain * fadeGain;
 
-      // Write to output (not additive — top layer wins)
-      outL[outIdx] = interpolatedL * gain;
-      outR[outIdx] = interpolatedR * gain;
+      if (outputsShareSampleRange) {
+        const monoSample =
+          buffer.numberOfChannels > 1
+            ? (interpolatedL + interpolatedR) / 2
+            : interpolatedL;
+        outL[outIdx] += monoSample * gain;
+      } else {
+        outL[outIdx] += interpolatedL * gain;
+        outR[outIdx] += interpolatedR * gain;
+      }
 
-      // Mark this position as covered
-      covered[outIdx] = 1;
+      if (region.opaque !== false) {
+        layerCoverage[outIdx] = 1;
+      }
     }
+  }
+
+  private validateOutputSampleRanges(
+    outputLeft: Float32Array,
+    outputRight: Float32Array,
+  ): boolean {
+    if (outputLeft.buffer !== outputRight.buffer) return false;
+
+    const rangesMatch =
+      outputLeft.byteOffset === outputRight.byteOffset &&
+      outputLeft.byteLength === outputRight.byteLength;
+    if (rangesMatch) return true;
+
+    const leftEnd = outputLeft.byteOffset + outputLeft.byteLength;
+    const rightEnd = outputRight.byteOffset + outputRight.byteLength;
+    const rangesOverlap =
+      outputLeft.byteOffset < rightEnd && outputRight.byteOffset < leftEnd;
+    if (rangesOverlap) {
+      throw new RangeError("Output channel sample ranges must not overlap");
+    }
+
+    return false;
   }
 }

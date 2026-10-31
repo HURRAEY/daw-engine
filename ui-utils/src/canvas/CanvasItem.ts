@@ -130,8 +130,8 @@ export abstract class CanvasItem {
   /** Convert a point from canvas (root) to item-local coordinates. */
   canvasToItem(p: Point): Point {
     // Build the ancestor chain, then apply transforms in reverse
-    const chain: CanvasItem[] = [];
-    let ancestor: CanvasItem | null = this;
+    const chain: CanvasItem[] = [this];
+    let ancestor: CanvasItem | null = this._parent;
     while (ancestor) {
       chain.push(ancestor);
       ancestor = ancestor.parent;

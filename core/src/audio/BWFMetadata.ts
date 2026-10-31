@@ -1,3 +1,5 @@
+import { BWF_ORIGINATOR_REFERENCE_PREFIX } from "../config/product-identifiers";
+
 /**
  * BWF (Broadcast Wave Format) metadata handler.
  *
@@ -594,6 +596,6 @@ export class BWFMetadata {
   private static generateOriginatorReference(): string {
     const now = Date.now().toString(36);
     const rand = Math.random().toString(36).substring(2, 10);
-    return `DROPAI${now}${rand}`.substring(0, 32);
+    return `${BWF_ORIGINATOR_REFERENCE_PREFIX}${now}${rand}`.substring(0, 32);
   }
 }

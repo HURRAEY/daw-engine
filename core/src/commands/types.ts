@@ -64,6 +64,8 @@ export const CommandType = {
   TRIM_REGION_TO_RANGE: "TRIM_REGION_TO_RANGE",
   TRIM_TO_ADJACENT_REGION: "TRIM_TO_ADJACENT_REGION",
   SET_REGION_FADES: "SET_REGION_FADES",
+  SET_REGION_LAYER: "SET_REGION_LAYER",
+  SET_REGION_OPAQUE: "SET_REGION_OPAQUE",
   MERGE_REGIONS: "MERGE_REGIONS",
   SELECT_REGIONS: "SELECT_REGIONS",
 
@@ -191,6 +193,7 @@ export const CommandType = {
   SET_TRACK_SOLO_ISOLATE: "SET_TRACK_SOLO_ISOLATE",
   SET_TRACK_SOLO_SAFE: "SET_TRACK_SOLO_SAFE",
   SET_TRACK_COMMENT: "SET_TRACK_COMMENT",
+  SET_TRACK_RECORD_MODE: "SET_TRACK_RECORD_MODE",
 
   // Phase 15: Additional
   SET_TRACK_PAN_WIDTH: "SET_TRACK_PAN_WIDTH",
@@ -374,6 +377,24 @@ export const SetRegionFadesCommandSchema = z.object({
   }),
 });
 
+export const SetRegionLayerCommandSchema = z.object({
+  type: z.literal(CommandType.SET_REGION_LAYER),
+  payload: z.object({
+    trackId: z.string(),
+    regionId: z.string(),
+    layer: z.number().int().nonnegative(),
+  }),
+});
+
+export const SetRegionOpaqueCommandSchema = z.object({
+  type: z.literal(CommandType.SET_REGION_OPAQUE),
+  payload: z.object({
+    trackId: z.string(),
+    regionId: z.string(),
+    opaque: z.boolean(),
+  }),
+});
+
 export const MergeRegionsCommandSchema = z.object({
   type: z.literal(CommandType.MERGE_REGIONS),
   payload: z.object({
@@ -422,22 +443,203 @@ export const SaveSessionCommandSchema = z.object({
 
 // ─── SessionSnapshot Zod Schemas ─────────────────────────────────────────────
 
-const RegionSnapshotSchema = z.object({
-  id: z.string(),
-  sourceId: z.string(),
-  name: z.string(),
-  start: z.number(),
-  length: z.number(),
-  sourceStart: z.number(),
-  gain: z.number(),
-  muted: z.boolean(),
-  layer: z.number(),
-  fadeIn: z.number(),
-  fadeOut: z.number(),
-  playbackRate: z.number(),
-  timeDomain: z.number(),
-  locked: z.boolean().optional(),
-});
+const AutomationPointSnapshotSchema = z
+  .object({
+    id: z.string(),
+    time: z.number(),
+    value: z.number(),
+    interpolation: z.string(),
+  })
+  .passthrough();
+
+const AutomationSnapshotSchema = z
+  .object({
+    parameter: z.string(),
+    mode: z.string(),
+    points: z.array(AutomationPointSnapshotSchema),
+  })
+  .passthrough();
+
+const PluginParameterSnapshotSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    value: z.number(),
+    min: z.number(),
+    max: z.number(),
+    step: z.number(),
+  })
+  .passthrough();
+
+const ProcessorSnapshotSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    type: z.string(),
+    active: z.boolean(),
+    latency: z.number(),
+    tailLength: z.number(),
+    state: z.record(z.string(), z.unknown()),
+    automations: z.array(AutomationSnapshotSchema),
+    plugin: z
+      .object({
+        id: z.string(),
+        descriptorId: z.string(),
+        name: z.string(),
+        type: z.string(),
+        parameters: z.array(PluginParameterSnapshotSchema),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+const CoreProcessorMetadataSchema = {
+  id: z.string().optional(),
+  name: z.string().optional(),
+  active: z.boolean(),
+  latency: z.number().optional(),
+  tailLength: z.number().optional(),
+  automations: z.array(AutomationSnapshotSchema).optional(),
+};
+
+const IOSnapshotSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    dataType: z.enum(["audio", "midi"]),
+    connections: z.array(z.string()).default([]),
+    latency: z.number().default(0),
+    bundleName: z.string().optional(),
+  })
+  .passthrough();
+
+const RouteSnapshotSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    active: z.boolean(),
+    compensationDelay: z.number(),
+    input: IOSnapshotSchema,
+    output: IOSnapshotSchema,
+    trim: z
+      .object({
+        ...CoreProcessorMetadataSchema,
+        gain: z.number(),
+      })
+      .passthrough(),
+    fader: z
+      .object({
+        ...CoreProcessorMetadataSchema,
+        gain: z.number(),
+      })
+      .passthrough(),
+    polarity: z
+      .object({
+        ...CoreProcessorMetadataSchema,
+        inverted: z.boolean(),
+      })
+      .passthrough(),
+    panner: z
+      .object({
+        ...CoreProcessorMetadataSchema,
+        azimuth: z.number(),
+        width: z.number(),
+        elevation: z.number(),
+        type: z.string(),
+        panLaw: z.string(),
+      })
+      .passthrough(),
+    preFaderProcessors: z.array(ProcessorSnapshotSchema),
+    postFaderProcessors: z.array(ProcessorSnapshotSchema),
+  })
+  .passthrough();
+
+const VideoMetadataSnapshotSchema = z
+  .object({
+    fps: z.number(),
+    width: z.number(),
+    height: z.number(),
+    codec: z.string(),
+    format: z.string(),
+    frameCount: z.number(),
+    hasAudio: z.boolean(),
+    thumbnailUrl: z.string().optional(),
+    originalVideoUrl: z.string(),
+  })
+  .passthrough();
+
+const SourceSnapshotSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    url: z.string(),
+    duration: z.number(),
+    sampleRate: z.number().optional(),
+    channelCount: z.number().optional(),
+    videoMetadata: VideoMetadataSnapshotSchema.optional(),
+    flags: z.number().default(0),
+    takeId: z.string().optional(),
+    ancestorName: z.string().optional(),
+    naturalPosition: z.number().optional(),
+    transients: z.array(z.number()).default([]),
+    cueMarkers: z.array(z.tuple([z.number(), z.string()])).default([]),
+    xrunPositions: z.array(z.number()).default([]),
+    capturedFor: z.string().optional(),
+    analysisData: z
+      .object({
+        transients: z.array(z.number()).default([]),
+        bpm: z.number().optional(),
+        bpmConfidence: z.number().optional(),
+        lufs: z.number().optional(),
+        truePeak: z.number().optional(),
+        zeroCrossingRate: z.number().optional(),
+        spectralCentroid: z.number().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+
+const RegionSnapshotSchema = z
+  .object({
+    id: z.string(),
+    sourceId: z.string(),
+    name: z.string(),
+    start: z.number(),
+    length: z.number(),
+    sourceStart: z.number(),
+    gain: z.number(),
+    muted: z.boolean(),
+    layer: z.number(),
+    fadeIn: z.number(),
+    fadeOut: z.number(),
+    fadeInShape: z.number().optional(),
+    fadeOutShape: z.number().optional(),
+    playbackRate: z.number().default(1),
+    stretch: z.number().optional(),
+    pitchSemitones: z.number().optional(),
+    syncPosition: z.number().nullable().optional(),
+    transients: z.array(z.number()).optional(),
+    timeDomain: z.number().default(0),
+    locked: z.boolean().optional(),
+  })
+  .passthrough();
+
+const CrossfadeSnapshotSchema = z
+  .object({
+    id: z.string(),
+    inRegionId: z.string(),
+    outRegionId: z.string(),
+    position: z.number(),
+    length: z.number(),
+    type: z.string(),
+    fadeInCurve: z.string(),
+    fadeOutCurve: z.string(),
+    active: z.boolean(),
+  })
+  .passthrough();
 
 const MidiNoteSnapshotSchema = z.object({
   id: z.string(),
@@ -460,23 +662,43 @@ const MidiRegionSnapshotSchema = z.object({
   notes: z.array(MidiNoteSnapshotSchema),
 });
 
-const TrackSnapshotSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  type: z.string(),
-  armed: z.boolean(),
-  mute: z.boolean(),
-  solo: z.boolean(),
-  color: z.string().optional(),
-  regions: z.array(RegionSnapshotSchema),
-  midiRegions: z.array(MidiRegionSnapshotSchema).optional(),
-});
+const TrackSnapshotSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    type: z.string(),
+    armed: z.boolean(),
+    monitor: z.boolean().optional(),
+    mute: z.boolean(),
+    solo: z.boolean(),
+    color: z.string().optional(),
+    soloIsolate: z.boolean().optional(),
+    soloSafe: z.boolean().optional(),
+    monitorMode: z.string().optional(),
+    trimGain: z.number().optional(),
+    comment: z.string().optional(),
+    recordMode: z.string().optional(),
+    frozen: z.boolean().optional(),
+    frozenSourceId: z.string().nullable().optional(),
+    parentTrackId: z.string().nullable().optional(),
+    groupId: z.string().nullable().optional(),
+    isCollapsed: z.boolean().optional(),
+    alignStyle: z.string().optional(),
+    trackMode: z.string().optional(),
+    bounceProgress: z.number().optional(),
+    route: RouteSnapshotSchema.optional(),
+    regions: z.array(RegionSnapshotSchema),
+    crossfades: z.array(CrossfadeSnapshotSchema).optional(),
+    midiRegions: z.array(MidiRegionSnapshotSchema).optional(),
+  })
+  .passthrough();
 
 const RangeSnapshotSchema = z.object({
   id: z.string(),
   name: z.string(),
   start: z.number(),
   end: z.number(),
+  color: z.string().optional(),
 });
 
 const SendBusSnapshotSchema = z.object({
@@ -525,28 +747,58 @@ const MixerSceneSnapshotSchema = z.object({
   tracks: z.array(MixerSceneTrackStateSchema),
 });
 
-const SessionSnapshotSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  sampleRate: z.number(),
-  tempo: z.number(),
-  timeSignature: z.tuple([z.number(), z.number()]),
-  transportFrame: z.number(),
-  tracks: z.array(TrackSnapshotSchema),
-  ranges: z.array(RangeSnapshotSchema),
-  sendBuses: z.array(SendBusSnapshotSchema),
-  markers: z.array(MarkerSnapshotSchema).optional(),
-  loopRangeId: z.string().optional(),
-  loopEnabled: z.boolean(),
-  punchRangeId: z.string().optional(),
-  punchEnabled: z.boolean().optional(),
-  preRollBars: z.number().optional(),
-  loopRecordingEnabled: z.boolean().optional(),
-  rippleEdit: z.boolean().optional(),
-  regionGroups: z.array(RegionGroupSnapshotSchema).optional(),
-  tempoMapEvents: z.array(TempoEventSnapshotSchema).optional(),
-  mixerScenes: z.array(MixerSceneSnapshotSchema).optional(),
-});
+export const SessionSnapshotSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    sampleRate: z.number(),
+    tempo: z.number(),
+    timeSignature: z.tuple([z.number(), z.number()]),
+    timecodeFps: z.number().optional(),
+    transportFrame: z.number(),
+    recordingStartFrame: z.number().optional(),
+    metronomeEnabled: z.boolean().optional(),
+    metronomeVolume: z.number().optional(),
+    groupSelectEnabled: z.boolean().optional(),
+    sources: z.array(SourceSnapshotSchema).default([]),
+    masterBus: RouteSnapshotSchema.optional(),
+    gridSettings: z
+      .object({
+        gridType: z.string(),
+        snapMode: z.string(),
+        snapToGrid: z.boolean(),
+        bpm: z.number(),
+        timeSignatureNumerator: z.number(),
+        timeSignatureDenominator: z.number(),
+      })
+      .passthrough()
+      .optional(),
+    tracks: z.array(TrackSnapshotSchema),
+    ranges: z.array(RangeSnapshotSchema),
+    sendBuses: z.array(SendBusSnapshotSchema),
+    markers: z.array(MarkerSnapshotSchema).optional(),
+    loopRangeId: z.string().optional(),
+    loopEnabled: z.boolean(),
+    punchRangeId: z.string().optional(),
+    punchEnabled: z.boolean().optional(),
+    preRollBars: z.number().optional(),
+    loopRecordingEnabled: z.boolean().optional(),
+    loopRecordingTakeCount: z.number().optional(),
+    rippleEdit: z.boolean().optional(),
+    regionGroups: z.array(RegionGroupSnapshotSchema).optional(),
+    tempoMapEvents: z.array(TempoEventSnapshotSchema).optional(),
+    meterMapEvents: z
+      .array(
+        z.object({
+          frame: z.number(),
+          beatsPerBar: z.number(),
+          beatValue: z.number(),
+        }),
+      )
+      .optional(),
+    mixerScenes: z.array(MixerSceneSnapshotSchema).optional(),
+  })
+  .passthrough();
 
 export const LoadSessionCommandSchema = z.object({
   type: z.literal(CommandType.LOAD_SESSION),
@@ -660,7 +912,7 @@ export const SetRegionPlaybackRateCommandSchema = z.object({
   payload: z.object({
     trackId: z.string(),
     regionId: z.string(),
-    playbackRate: z.number(),
+    playbackRate: z.number().finite().positive(),
   }),
 });
 
@@ -969,6 +1221,14 @@ export const SetTrackMonitorModeCommandSchema = z.object({
   }),
 });
 
+export const SetTrackRecordModeCommandSchema = z.object({
+  type: z.literal(CommandType.SET_TRACK_RECORD_MODE),
+  payload: z.object({
+    trackId: z.string(),
+    mode: z.enum(["sound_on_sound", "non_layered", "layered"]),
+  }),
+});
+
 export const SetTrackTrimGainCommandSchema = z.object({
   type: z.literal(CommandType.SET_TRACK_TRIM_GAIN),
   payload: z.object({
@@ -1178,6 +1438,8 @@ export const AudioCommandSchema = z.discriminatedUnion("type", [
   ResizeRegionCommandSchema,
   TrimRegionCommandSchema,
   SetRegionFadesCommandSchema,
+  SetRegionLayerCommandSchema,
+  SetRegionOpaqueCommandSchema,
   MergeRegionsCommandSchema,
   z.object({
     type: z.literal(CommandType.SET_TEMPO),
@@ -1520,6 +1782,7 @@ export const AudioCommandSchema = z.discriminatedUnion("type", [
   RenameMarkerCommandSchema,
   SetMarkerLockedCommandSchema,
   SetTrackMonitorModeCommandSchema,
+  SetTrackRecordModeCommandSchema,
   SetTrackTrimGainCommandSchema,
   SetTrackSoloIsolateCommandSchema,
   SetTrackSoloSafeCommandSchema,

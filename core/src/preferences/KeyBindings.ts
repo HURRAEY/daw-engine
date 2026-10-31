@@ -1,7 +1,7 @@
+import { KEY_BINDINGS_STORAGE_KEY } from "../config/product-identifiers";
 import { Signal } from "../lib/Signal";
 
 import { logger } from "../utils/Logger";
-const STORAGE_KEY = "daw-engine-keybindings";
 
 /**
  * Manages custom keyboard shortcut bindings that override defaults.
@@ -71,7 +71,7 @@ export class KeyBindings {
     try {
       if (typeof localStorage === "undefined") return;
       const data = Object.fromEntries(this.customBindings);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      localStorage.setItem(KEY_BINDINGS_STORAGE_KEY, JSON.stringify(data));
     } catch {
       // localStorage may be unavailable (SSR, private browsing)
       logger.warn("KeyBindings", "Failed to save to localStorage");
@@ -81,7 +81,7 @@ export class KeyBindings {
   private loadFromStorage(): void {
     try {
       if (typeof localStorage === "undefined") return;
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(KEY_BINDINGS_STORAGE_KEY);
       if (raw) {
         const data = JSON.parse(raw) as Record<string, string>;
         this.customBindings = new Map(Object.entries(data));

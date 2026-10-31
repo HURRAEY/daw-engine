@@ -1,6 +1,6 @@
+import { DAW_DATABASE_NAME } from "../config/product-identifiers";
 import { SessionSnapshot } from "../domain/Session";
 
-const DB_NAME = "daw-engine";
 const DB_VERSION = 1;
 const SESSIONS_STORE = "sessions";
 const SNAPSHOTS_STORE = "snapshots";
@@ -50,7 +50,7 @@ export class SessionStorage {
     if (this.dbPromise) return this.dbPromise;
 
     this.dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      const request = indexedDB.open(DAW_DATABASE_NAME, DB_VERSION);
 
       request.onupgradeneeded = () => {
         const db = request.result;

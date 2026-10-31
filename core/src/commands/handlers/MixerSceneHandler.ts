@@ -161,16 +161,16 @@ export class MixerSceneHandler implements CommandHandler {
       }
 
       case CommandType.RENAME_MIXER_SCENE: {
-        const scene = audioEngine.session.mixerSceneManager.scenes.find(
-          (s) => s.id === (payload.sceneId as string),
+        const renamed = audioEngine.session.mixerSceneManager.renameScene(
+          payload.sceneId as string,
+          payload.name as string,
         );
-        if (!scene) {
+        if (!renamed) {
           return {
             success: false,
             message: `Mixer scene not found: ${payload.sceneId}`,
           };
         }
-        scene.name = payload.name as string;
         return {
           success: true,
           message: `Mixer scene renamed to "${payload.name}"`,

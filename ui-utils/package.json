@@ -2,7 +2,7 @@
   "name": "@daw-engine/ui-utils",
   "version": "1.0.0",
   "description": "Framework-agnostic UI utilities for building DAW interfaces on top of @daw-engine/core",
-  "license": "MIT",
+  "license": "GPL-2.0-or-later",
   "publishConfig": {
     "access": "public"
   },
@@ -22,7 +22,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "sideEffects": false,
   "engines": {
@@ -31,6 +32,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
+    "lint": "pnpm --dir .. run lint:ui-utils",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit"
   },

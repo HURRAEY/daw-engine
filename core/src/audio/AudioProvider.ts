@@ -3,13 +3,22 @@ import { Source } from "../domain/Source";
 import { RegionDTO, MidiRegionDTO } from "./dto";
 import { MeterData } from "../domain/MeterData";
 import { AutomationPoint } from "../automation/types";
+import type { RoutingSnapshot } from "./engine/RoutingSnapshot";
 
 export interface AudioProvider {
   // Initialization
   initialize(): Promise<void>;
 
+  // Session의 가변 객체 대신 동결된 실행 구조만 audio runtime에 전달한다.
+  applyRoutingSnapshot(snapshot: RoutingSnapshot): void;
+
   // Transport Control
   start(): void;
+  /**
+   * Declick으로 출력을 무음까지 낮춘 뒤 transport를 정지한다.
+   * 다음 start()가 정상 음량으로 재생할 수 있는 상태에서 Promise를 완료해야 한다.
+   */
+  stopWithDeclick?(): Promise<void>;
   stop(): void;
   pause(): void;
   seek(time: number): void;
@@ -153,6 +162,11 @@ export interface AudioProvider {
     processorId: ProcessorId,
     parameter: string,
     value: number,
+  ): void;
+  setMasterProcessorAutomation(
+    processorId: ProcessorId,
+    parameter: string,
+    events: ReadonlyArray<AutomationPoint>,
   ): void;
   registerMasterIO(inputId: string, outputId: string): void;
 

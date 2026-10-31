@@ -1,3 +1,5 @@
+import { PLUGIN_PRESET_STORAGE_KEY } from "../config/product-identifiers";
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface PluginPreset {
@@ -15,8 +17,6 @@ export interface PluginPresetSnapshot {
 }
 
 // ─── PresetManager ────────────────────────────────────────────────────────────
-
-const STORAGE_KEY = "daw-engine-plugin-presets";
 
 /**
  * Singleton that manages built-in and custom plugin presets.
@@ -720,7 +720,10 @@ export class PresetManager {
         pluginId: p.pluginId,
         parameters: Object.fromEntries(p.parameters),
       }));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshots));
+      localStorage.setItem(
+        PLUGIN_PRESET_STORAGE_KEY,
+        JSON.stringify(snapshots),
+      );
     } catch {
       // localStorage unavailable or quota exceeded – silently ignore
     }
@@ -729,7 +732,7 @@ export class PresetManager {
   private loadCustomPresets(): void {
     try {
       if (typeof localStorage === "undefined") return;
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(PLUGIN_PRESET_STORAGE_KEY);
       if (!raw) return;
       const snapshots: PluginPresetSnapshot[] = JSON.parse(raw);
       this.customPresets = snapshots.map((s) => ({

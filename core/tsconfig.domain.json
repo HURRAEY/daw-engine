@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "incremental": false,
+    "skipLibCheck": true
+  },
+  "include": ["src/domain-entry.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}

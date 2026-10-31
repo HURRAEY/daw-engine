@@ -1,7 +1,8 @@
 import { UndoableCommand } from "../Command";
 import { Session } from "../../domain/Session";
 import { TrackId, RegionId, FrameCount } from "../../domain/types";
-import { MoveRegionCommand } from "./MoveRegionCommand";
+import { UndoTransaction } from "../UndoTransaction";
+import { moveRegionAndCreateTransaction } from "../history/moveRegionAndCreateTransaction";
 
 export interface BatchMoveEntry {
   trackId: TrackId;
@@ -17,7 +18,7 @@ export interface BatchMoveEntry {
  * applies the same delta to every selected region.
  */
 export class BatchMoveRegionsCommand implements UndoableCommand {
-  private subCommands: MoveRegionCommand[] = [];
+  private transactions: UndoTransaction[] = [];
 
   constructor(
     private session: Session,
@@ -25,30 +26,26 @@ export class BatchMoveRegionsCommand implements UndoableCommand {
   ) {}
 
   public async execute(): Promise<void> {
-    this.subCommands = this.entries.map(
-      (e) =>
-        new MoveRegionCommand(
-          this.session,
-          e.trackId,
-          e.regionId,
-          e.newStart,
-          e.targetTrackId,
-        ),
+    this.transactions = this.entries.map((entry) =>
+      moveRegionAndCreateTransaction({
+        session: this.session,
+        trackId: entry.trackId,
+        regionId: entry.regionId,
+        newStart: entry.newStart,
+        targetTrackId: entry.targetTrackId,
+      }),
     );
-    for (const cmd of this.subCommands) {
-      await cmd.execute();
-    }
   }
 
   public async undo(): Promise<void> {
-    for (let i = this.subCommands.length - 1; i >= 0; i--) {
-      await this.subCommands[i].undo();
+    for (let i = this.transactions.length - 1; i >= 0; i--) {
+      await this.transactions[i].undo();
     }
   }
 
   public async redo(): Promise<void> {
-    for (const cmd of this.subCommands) {
-      await cmd.redo();
+    for (const transaction of this.transactions) {
+      await transaction.redo();
     }
   }
 }
